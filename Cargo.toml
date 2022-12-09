@@ -1,0 +1,19 @@
+[package]
+name = "tmc2rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "tmc2rs"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4.0.23", features = ["derive"] }
+cgmath = "0.18.0"
+fast-math = "0.1.1"
+num_enum = "0.5.7"
+
+[[bin]]
+name = "decoder"
