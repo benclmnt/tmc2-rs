@@ -31,7 +31,7 @@ pub struct RawContext {
     // offset_lossy_OM: usize,
     // geometry_3d_coordinates_bitdepth: usize,
     // single_layer_mode: bool,
-    pub bitstream_stat: Stat,
+    // pub bitstream_stat: Stat,
     atlas_hls: Vec<AtlasHighLevelSyntax>,
 }
 
@@ -43,7 +43,6 @@ impl RawContext {
             atlas_hls: Vec::new(),
             atlas_index: 0,
             active_vps: 0,
-            bitstream_stat: Stat::new(),
             v3c_unit_headers: HashMap::new(),
             vpcc_parameter_sets: Vec::new(),
         }

@@ -1,3 +1,4 @@
+use log::debug;
 use std::cell::RefCell;
 use std::path::Path;
 
@@ -236,7 +237,7 @@ impl VideoBitstream {
         };
 
         vbs.data[..size].copy_from_slice(bitstream.read_slice(size));
-        dbg!(&vbs.video_type, &vbs.data.len());
+        debug!("VideoType={:?} size={}", &vbs.video_type, &vbs.data.len());
         vbs
     }
 }

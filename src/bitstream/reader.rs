@@ -2,6 +2,7 @@ use crate::common::context::Context;
 
 // Copied from source/lib/PccLibBitstreamReader/source/PCCBitstreamReader.cpp
 use super::{Bitstream, VideoBitstream};
+use log::{debug, info, trace};
 use num_enum::FromPrimitive;
 use std::collections::VecDeque;
 
@@ -240,7 +241,7 @@ impl V3CParameterSet {
     fn from_bitstream(bitstream: &Bitstream) -> Self {
         let mut sps = V3CParameterSet::default();
         sps.profile_tier_level = ProfileTierLevel::from_bitstream(bitstream);
-        dbg!(&sps.profile_tier_level);
+        debug!("[ptl] {:?}", &sps.profile_tier_level);
         sps.v3c_parameter_set_id = bitstream.read(4) as u8; // u(4)
         bitstream.read(8); // u(8)
         sps.atlas_count_minus_1 = bitstream.read(6) as u8; // u(6)
@@ -272,7 +273,8 @@ impl V3CParameterSet {
             sps.geometry_video_present_flag[j] = bitstream.read(1) != 0; // u(1)
             sps.attribute_video_present_flag[j] = bitstream.read(1) != 0;
             // u(1)
-            dbg!(
+            trace!(
+                "Atlas *_video_present flags: aux: {:?} occupancy: {:?} geom: {:?} attr: {:?}",
                 &sps.auxiliary_video_present_flag[j],
                 &sps.occupancy_video_present_flag[j],
                 &sps.geometry_video_present_flag[j],
@@ -620,7 +622,10 @@ impl SampleStreamV3CUnit {
         let v3c_unit_type8 = v3c_unit.bitstream.data[0] >> 3;
         let v3c_unit_type: V3CUnitType = v3c_unit_type8.into();
         v3c_unit.unit_type = v3c_unit_type;
-        dbg!(v3c_unit.size, v3c_unit.unit_type);
+        info!(
+            "[v3c_unit] size: {}, type: {:?}",
+            v3c_unit.size, v3c_unit.unit_type
+        );
         return v3c_unit;
     }
 
@@ -688,7 +693,8 @@ impl SampleStreamNalUnit {
             // Originally: PCCBitstreamReader::sampleStreamNalUnit
             let nalu_size = bitstream.read(8 * (ssnu.size_precision_bytes_minus_1 + 1)) as usize;
             let nalu = NalUnit::from_bitstream(syntax, bitstream, nalu_size);
-            dbg!(
+            debug!(
+                "[nalu] size: {}, precision: {}, type: {:?}, bitsWritten: {}",
                 nalu.size,
                 ssnu.size_precision_bytes_minus_1 + 1,
                 nalu.unit_type,
@@ -1535,7 +1541,6 @@ impl AtlasTileHeader {
             }
         }
         bitstream.byte_align();
-        // dbg!(&ath);
         ath
     }
 }
@@ -1763,7 +1768,6 @@ impl IntraPatchDataUnit {
         if asps.plr_enabled_flag {
             unimplemented!("plr_enabled_flag")
         }
-        // dbg!(&pdu);
         pdu
     }
 }

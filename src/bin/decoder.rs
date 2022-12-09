@@ -51,11 +51,13 @@ fn decompress_video(args: Args) {
     while ssvu.get_v3c_unit_count() > 0 {
         // context.set_bitstream_stat(&bitstream_stat);
         ssvu.decode(&mut context);
-        // if context.check_profile() {}
+        // TODO: context.check_profile()
     }
 }
 
 fn main() {
+    env_logger::init();
+
     println!("PccAppDecoder v18");
     let args: Args = Args::parse();
     if !args.check() {
