@@ -1,10 +1,20 @@
-use crate::common::context::Context;
+use crate::{common::context::Context, decoder::PatchOrientation};
 
 // Copied from source/lib/PccLibBitstreamReader/source/PCCBitstreamReader.cpp
 use super::{Bitstream, VideoBitstream};
 use log::{debug, info, trace};
 use num_enum::FromPrimitive;
 use std::collections::VecDeque;
+
+#[derive(Default)]
+struct ReadableAuxData<'a> {
+    syntax: Option<&'a mut Context>,
+    aux: Option<[usize; 2]>,
+}
+
+trait Readable {
+    fn from_bitstream(bitstream: &Bitstream, aux_data: ReadableAuxData) -> Self;
+}
 
 #[derive(Default)]
 struct V3CUnit {
@@ -34,26 +44,29 @@ impl V3CUnit {
             .get_v3c_unit_header(&v3c_unit_type)
             .unwrap_or_default();
 
-        if v3c_unit_type != V3CUnitType::VPS {
+        if v3c_unit_type != V3CUnitType::V3cParameterSet {
             v3c_unit_header.sequence_parameter_set_id = self.bitstream.read(4) as u8; // u(4)
             syntax.active_vps = v3c_unit_header.sequence_parameter_set_id;
             v3c_unit_header.atlas_id = self.bitstream.read(6) as u8; // u(6)
-            syntax.atlas_index = v3c_unit_header.atlas_id;
+            assert!(
+                v3c_unit_header.atlas_id == 0,
+                "V3C only have a single atlas"
+            );
         }
 
         match v3c_unit_type {
-            V3CUnitType::AVD => {
+            V3CUnitType::AttributeVideoData => {
                 v3c_unit_header.attribute_index = self.bitstream.read(7) as u8; // u(7)
                 v3c_unit_header.attribute_dimension_index = self.bitstream.read(5) as u8; // u(5)
                 v3c_unit_header.map_index = self.bitstream.read(4) as u8; // u(4)
                 v3c_unit_header.auxiliary_video_flag = self.bitstream.read(1) != 0;
             }
-            V3CUnitType::GVD => {
+            V3CUnitType::GeometryVideoData => {
                 v3c_unit_header.map_index = self.bitstream.read(4) as u8; // u(4)
                 v3c_unit_header.auxiliary_video_flag = self.bitstream.read(1) != 0; // u(1)
                 self.bitstream.read(12);
             }
-            V3CUnitType::OVD | V3CUnitType::AD => {
+            V3CUnitType::OccupancyVideoData | V3CUnitType::AtlasData => {
                 self.bitstream.read(17);
             }
             _ => {
@@ -61,29 +74,34 @@ impl V3CUnit {
             }
         }
 
+        assert!(
+            !v3c_unit_header.auxiliary_video_flag,
+            "Auxiliary video not implemented"
+        );
         syntax.set_v3c_unit_header(v3c_unit_type, v3c_unit_header);
-        return v3c_unit_type;
+        v3c_unit_type
     }
 
     /// Originally PCCBitstreamReader::v3cUnitPayload
     fn decode_payload(&self, syntax: &mut Context) {
         match self.unit_type {
-            V3CUnitType::VPS => {
-                let vps = V3CParameterSet::from_bitstream(&self.bitstream);
+            V3CUnitType::V3cParameterSet => {
+                let vps =
+                    V3CParameterSet::from_bitstream(&self.bitstream, ReadableAuxData::default());
                 syntax.allocate_atlas_hls(vps.atlas_count_minus_1 as usize + 1);
                 syntax.add_v3c_parameter_set(vps);
             }
-            V3CUnitType::AD => {
+            V3CUnitType::AtlasData => {
                 SampleStreamNalUnit::from_bitstream(syntax, &self.bitstream);
             }
-            V3CUnitType::OVD => {
+            V3CUnitType::OccupancyVideoData => {
                 syntax.add_video_bitstream(VideoBitstream::from_bitstream(
                     &self.bitstream,
                     self.size - 4,
                     super::VideoType::Occupancy,
                 ));
             }
-            V3CUnitType::GVD => {
+            V3CUnitType::GeometryVideoData => {
                 let vuh = syntax.get_v3c_unit_header(&self.unit_type).unwrap();
                 if vuh.auxiliary_video_flag {
                     // syntax.add_video_bitstream(VideoBitstream::from_bitstream(
@@ -94,7 +112,7 @@ impl V3CUnit {
                     unimplemented!("Auxiliary video for GVD not implemented")
                 } else {
                     let vps = syntax.get_vps().unwrap();
-                    if vps.map_count_minus_1[0] > 0 && vps.multiple_map_streams_present_flag[0] {
+                    if vps.map_count_minus_1 > 0 && vps.multiple_map_streams_present_flag {
                         unimplemented!("Multiple map streams for GVD not implemented");
                     }
                     syntax.add_video_bitstream(VideoBitstream::from_bitstream(
@@ -104,15 +122,15 @@ impl V3CUnit {
                     ));
                 }
             }
-            V3CUnitType::AVD => {
+            V3CUnitType::AttributeVideoData => {
                 let vuh = syntax.get_v3c_unit_header(&self.unit_type).unwrap();
                 let vps = syntax.get_vps().unwrap();
-                if vps.attribute_information[0].attribute_count == 0 {
+                if vps.attribute_information.attribute_count == 0 {
                     return;
                 }
                 if vuh.auxiliary_video_flag {
                     unimplemented!("Auxiliary video for AVD not implemented");
-                } else if vps.map_count_minus_1[0] > 0 && vps.multiple_map_streams_present_flag[0] {
+                } else if vps.map_count_minus_1 > 0 && vps.multiple_map_streams_present_flag {
                     unimplemented!("Multiple map streams for AVD not implemented");
                 } else {
                     assert_eq!(
@@ -152,38 +170,39 @@ pub(crate) struct V3CUnitHeader {
 pub(crate) enum V3CUnitType {
     #[default]
     /// Sequence parameter set
-    VPS,
+    V3cParameterSet,
     /// Patch Data Group / Atlas information
-    AD,
-    /// Occupancy Video Data
-    OVD,
-    /// Geometry Video Data
-    GVD,
-    /// Attribute Video Data
-    AVD,
+    AtlasData,
+    OccupancyVideoData,
+    GeometryVideoData,
+    AttributeVideoData,
     // Packed Video Data
-    // PVD,
+    // PackedVideoData,
 }
 
 #[derive(Default)]
-pub(crate) struct V3CParameterSet {
-    profile_tier_level: ProfileTierLevel,
-    v3c_parameter_set_id: u8,
-    atlas_count_minus_1: u8,
-    atlas_id: Vec<u8>, // originally Vec<u16>
-    frame_width: Vec<u16>,
-    frame_height: Vec<u16>,
-    map_count_minus_1: Vec<u8>,
-    multiple_map_streams_present_flag: Vec<bool>,
-    map_absolute_coding_enable_flag: Vec<Vec<bool>>,
-    map_predictor_index_diff: Vec<Vec<bool>>,
-    auxiliary_video_present_flag: Vec<bool>,
-    occupancy_video_present_flag: Vec<bool>,
-    geometry_video_present_flag: Vec<bool>,
-    attribute_video_present_flag: Vec<bool>,
-    occupancy_information: Vec<OccupancyInformation>,
-    geometry_information: Vec<GeometryInformation>,
-    attribute_information: Vec<AttributeInformation>,
+pub struct V3CParameterSet {
+    pub(crate) profile_tier_level: ProfileTierLevel,
+    pub(crate) v3c_parameter_set_id: u8,
+    /// (12Dec22) This is always 0 up to reference impl v18.
+    /// There is a comment in the original code (PCCEncoderParameters.cpp) saying V3C only have a single atlas
+    ///
+    /// DIFF: Making use of the fact above, we set all the following fields to its non-Vec equivalent
+    pub atlas_count_minus_1: u8,
+    atlas_id: u8, // originally Vec<u16>
+    frame_width: u16,
+    frame_height: u16,
+    pub(crate) map_count_minus_1: u8,
+    multiple_map_streams_present_flag: bool,
+    map_absolute_coding_enable_flag: Vec<bool>,
+    map_predictor_index_diff: Vec<bool>,
+    pub(crate) auxiliary_video_present_flag: bool,
+    pub(crate) occupancy_video_present_flag: bool,
+    pub(crate) geometry_video_present_flag: bool,
+    pub(crate) attribute_video_present_flag: bool,
+    pub(crate) occupancy_information: OccupancyInformation,
+    pub(crate) geometry_information: GeometryInformation,
+    pub(crate) attribute_information: AttributeInformation,
     extension_present_flag: bool,
     // extension_8bits: u8,
     // extension_length_minus_1: usize,
@@ -193,111 +212,123 @@ pub(crate) struct V3CParameterSet {
 
 impl V3CParameterSet {
     /// Allocate atlas data
+    /// All implementation is commented because atlas_count_minus_1 is always 0.
+    #[inline]
     fn allocate_atlas(&mut self) {
-        self.atlas_id
-            .resize(self.atlas_count_minus_1 as usize + 1, 0);
-        self.frame_width
-            .resize(self.atlas_count_minus_1 as usize + 1, 1);
-        self.frame_height
-            .resize(self.atlas_count_minus_1 as usize + 1, 0);
-        self.map_count_minus_1
-            .resize(self.atlas_count_minus_1 as usize + 1, 0);
-        self.multiple_map_streams_present_flag
-            .resize(self.atlas_count_minus_1 as usize + 1, false);
-        self.map_absolute_coding_enable_flag
-            .resize_with(self.atlas_count_minus_1 as usize + 1, Vec::new);
-        self.map_predictor_index_diff
-            .resize_with(self.atlas_count_minus_1 as usize + 1, Vec::new);
-        self.auxiliary_video_present_flag
-            .resize(self.atlas_count_minus_1 as usize + 1, false);
-        self.occupancy_video_present_flag
-            .resize(self.atlas_count_minus_1 as usize + 1, false);
-        self.geometry_video_present_flag
-            .resize(self.atlas_count_minus_1 as usize + 1, false);
-        self.attribute_video_present_flag
-            .resize(self.atlas_count_minus_1 as usize + 1, false);
-        self.occupancy_information.resize_with(
-            self.atlas_count_minus_1 as usize + 1,
-            OccupancyInformation::default,
-        );
-        self.geometry_information.resize_with(
-            self.atlas_count_minus_1 as usize + 1,
-            GeometryInformation::default,
-        );
-        self.attribute_information.resize_with(
-            self.atlas_count_minus_1 as usize + 1,
-            AttributeInformation::default,
-        );
+        // self.atlas_id
+        //     .resize(self.atlas_count_minus_1 as usize + 1, 0);
+        // self.frame_width
+        //     .resize(self.atlas_count_minus_1 as usize + 1, 1);
+        // self.frame_height
+        //     .resize(self.atlas_count_minus_1 as usize + 1, 0);
+        // self.map_count_minus_1
+        //     .resize(self.atlas_count_minus_1 as usize + 1, 0);
+        // self.multiple_map_streams_present_flag
+        //     .resize(self.atlas_count_minus_1 as usize + 1, false);
+        // self.map_absolute_coding_enable_flag
+        //     .resize_with(self.atlas_count_minus_1 as usize + 1, Vec::new);
+        // self.map_predictor_index_diff
+        //     .resize_with(self.atlas_count_minus_1 as usize + 1, Vec::new);
+        // self.auxiliary_video_present_flag
+        //     .resize(self.atlas_count_minus_1 as usize + 1, false);
+        // self.occupancy_video_present_flag
+        //     .resize(self.atlas_count_minus_1 as usize + 1, false);
+        // self.geometry_video_present_flag
+        //     .resize(self.atlas_count_minus_1 as usize + 1, false);
+        // self.attribute_video_present_flag
+        //     .resize(self.atlas_count_minus_1 as usize + 1, false);
+        // self.occupancy_information.resize_with(
+        //     self.atlas_count_minus_1 as usize + 1,
+        //     OccupancyInformation::default,
+        // );
+        // self.geometry_information.resize_with(
+        //     self.atlas_count_minus_1 as usize + 1,
+        //     GeometryInformation::default,
+        // );
+        // self.attribute_information.resize_with(
+        //     self.atlas_count_minus_1 as usize + 1,
+        //     AttributeInformation::default,
+        // );
     }
 
     /// allocate maps at index `index`
-    fn allocate_map(&mut self, index: usize) {
-        self.map_absolute_coding_enable_flag[index]
-            .resize(self.map_count_minus_1[index] as usize + 1, true);
-        self.map_predictor_index_diff[index]
-            .resize(self.map_count_minus_1[index] as usize + 1, false);
+    fn allocate_map(&mut self) {
+        self.map_absolute_coding_enable_flag
+            .resize(self.map_count_minus_1 as usize + 1, true);
+        self.map_predictor_index_diff
+            .resize(self.map_count_minus_1 as usize + 1, false);
     }
+}
 
-    fn from_bitstream(bitstream: &Bitstream) -> Self {
-        let mut sps = V3CParameterSet::default();
-        sps.profile_tier_level = ProfileTierLevel::from_bitstream(bitstream);
+impl Readable for V3CParameterSet {
+    fn from_bitstream(bitstream: &Bitstream, _: ReadableAuxData) -> Self {
+        let mut sps = V3CParameterSet {
+            profile_tier_level: ProfileTierLevel::from_bitstream(bitstream),
+            ..Default::default()
+        };
         debug!("[ptl] {:?}", &sps.profile_tier_level);
         sps.v3c_parameter_set_id = bitstream.read(4) as u8; // u(4)
         bitstream.read(8); // u(8)
         sps.atlas_count_minus_1 = bitstream.read(6) as u8; // u(6)
+        assert!(
+            sps.atlas_count_minus_1 == 0,
+            "V3C only have a single atlas. This is the case up to mpeg-pcc-tmc2 v18."
+        );
         sps.allocate_atlas();
-        for j in 0..=sps.atlas_count_minus_1 as usize {
-            sps.atlas_id[j] = bitstream.read(6) as u8; // u(6)
-            sps.frame_width[j] = bitstream.read_uvlc() as u16; // ue(v)
-            sps.frame_height[j] = bitstream.read_uvlc() as u16; // ue(v)
-            sps.map_count_minus_1[j] = bitstream.read(4) as u8; // u(4)
-            sps.allocate_map(j);
-            if sps.map_count_minus_1[j] > 0 {
-                sps.multiple_map_streams_present_flag[j] = bitstream.read(1) != 0;
+
+        sps.atlas_id = bitstream.read(6) as u8; // u(6)
+        sps.frame_width = bitstream.read_uvlc() as u16; // ue(v)
+        sps.frame_height = bitstream.read_uvlc() as u16; // ue(v)
+        sps.map_count_minus_1 = bitstream.read(4) as u8; // u(4)
+        sps.allocate_map();
+        if sps.map_count_minus_1 > 0 {
+            sps.multiple_map_streams_present_flag = bitstream.read(1) != 0;
+            // u(1)
+            assert!(
+                !sps.multiple_map_streams_present_flag,
+                "V3C only have a single map. This is the case up to mpeg-pcc-tmc2 v18."
+            )
+        }
+        sps.map_absolute_coding_enable_flag.push(true);
+        for k in 1..=sps.map_count_minus_1 as usize {
+            if sps.multiple_map_streams_present_flag {
+                sps.map_absolute_coding_enable_flag[k] = bitstream.read(1) != 0;
                 // u(1)
             }
-            sps.map_absolute_coding_enable_flag[j].push(true);
-            for k in 1..=sps.map_count_minus_1[j] as usize {
-                if sps.multiple_map_streams_present_flag[j] {
-                    sps.map_absolute_coding_enable_flag[j][k] = bitstream.read(1) != 0;
-                    // u(1)
-                }
 
-                if !sps.map_absolute_coding_enable_flag[j][k] {
-                    sps.map_predictor_index_diff[j][k] = bitstream.read_uvlc() != 0;
-                    // ue(v)
-                }
-            }
-            sps.auxiliary_video_present_flag[j] = bitstream.read(1) != 0; // u(1)
-            sps.occupancy_video_present_flag[j] = bitstream.read(1) != 0; // u(1)
-            sps.geometry_video_present_flag[j] = bitstream.read(1) != 0; // u(1)
-            sps.attribute_video_present_flag[j] = bitstream.read(1) != 0;
-            // u(1)
-            trace!(
-                "Atlas *_video_present flags: aux: {:?} occupancy: {:?} geom: {:?} attr: {:?}",
-                &sps.auxiliary_video_present_flag[j],
-                &sps.occupancy_video_present_flag[j],
-                &sps.geometry_video_present_flag[j],
-                &sps.attribute_video_present_flag[j]
-            );
-
-            if sps.occupancy_video_present_flag[j] {
-                sps.occupancy_information[j] = OccupancyInformation::from_bitstream(bitstream);
-            }
-            if sps.geometry_video_present_flag[j] {
-                sps.geometry_information[j] = GeometryInformation::from_bitstream(
-                    bitstream,
-                    sps.auxiliary_video_present_flag[j],
-                );
-            }
-            if sps.attribute_video_present_flag[j] {
-                sps.attribute_information[j] = AttributeInformation::from_bitstream(
-                    bitstream,
-                    sps.auxiliary_video_present_flag[j],
-                    sps.map_count_minus_1[j],
-                );
+            if !sps.map_absolute_coding_enable_flag[k] {
+                sps.map_predictor_index_diff[k] = bitstream.read_uvlc() != 0;
+                // ue(v)
             }
         }
+        sps.auxiliary_video_present_flag = bitstream.read(1) != 0; // u(1)
+        sps.occupancy_video_present_flag = bitstream.read(1) != 0; // u(1)
+        sps.geometry_video_present_flag = bitstream.read(1) != 0; // u(1)
+        sps.attribute_video_present_flag = bitstream.read(1) != 0;
+        // u(1)
+        trace!(
+            "Atlas *_video_present flags: aux: {:?} occupancy: {:?} geom: {:?} attr: {:?}",
+            &sps.auxiliary_video_present_flag,
+            &sps.occupancy_video_present_flag,
+            &sps.geometry_video_present_flag,
+            &sps.attribute_video_present_flag
+        );
+
+        if sps.occupancy_video_present_flag {
+            sps.occupancy_information = OccupancyInformation::from_bitstream(bitstream);
+        }
+        if sps.geometry_video_present_flag {
+            sps.geometry_information =
+                GeometryInformation::from_bitstream(bitstream, sps.auxiliary_video_present_flag);
+        }
+        if sps.attribute_video_present_flag {
+            sps.attribute_information = AttributeInformation::from_bitstream(
+                bitstream,
+                sps.auxiliary_video_present_flag,
+                sps.map_count_minus_1,
+            );
+        }
+
         sps.extension_present_flag = bitstream.read(1) != 0; // u(1)
         if sps.extension_present_flag {
             unimplemented!("extension_present_flag");
@@ -318,11 +349,11 @@ impl V3CParameterSet {
 
 /// 8.3.4.3 Occupancy information Set Syntax
 #[derive(Debug)]
-struct OccupancyInformation {
-    occupancy_codec_id: u8,
-    occupancy_lossy_compression_threshold: u8,
-    occupancy_2d_bitdepth_minus_1: u8,
-    occupancy_msb_align_flag: bool,
+pub(crate) struct OccupancyInformation {
+    pub(crate) occupancy_codec_id: u8,
+    pub(crate) occupancy_lossy_compression_threshold: u8,
+    pub(crate) occupancy_2d_bitdepth_minus_1: u8,
+    pub(crate) occupancy_msb_align_flag: bool,
 }
 
 impl Default for OccupancyInformation {
@@ -349,12 +380,12 @@ impl OccupancyInformation {
 
 /// 8.3.4.4 Geometry information Syntax
 #[derive(Debug)]
-struct GeometryInformation {
-    geometry_codec_id: u8,
+pub(crate) struct GeometryInformation {
+    pub(crate) geometry_codec_id: u8,
     auxiliary_geometry_codec_id: u8,
-    geometry_2d_bitdepth_minus_1: u8,
-    geometry_3d_coordinates_bitdepth_minus_1: u8,
-    geometry_msb_align_flag: bool,
+    pub(crate) geometry_2d_bitdepth_minus_1: u8,
+    pub(crate) geometry_3d_coordinates_bitdepth_minus_1: u8,
+    pub(crate) geometry_msb_align_flag: bool,
 }
 
 impl Default for GeometryInformation {
@@ -386,9 +417,9 @@ impl GeometryInformation {
 }
 
 /// 8.3.4.5 Attribute Information Syntax
-/// FIXME: probably can be optimized since we only have 1 attribute
+/// IDEA: can be optimized since we only have 1 attribute
 #[derive(Debug, Default)]
-struct AttributeInformation {
+pub(crate) struct AttributeInformation {
     attribute_count: u8,
     attribute_type_id: Vec<u8>,
     attribute_codec_id: Vec<u8>,
@@ -474,7 +505,7 @@ impl AttributeInformation {
 ///       ptl_profile_reconstruction_idc information describes conformance point B.
 ///
 #[derive(Debug, Default)]
-struct ProfileTierLevel {
+pub(crate) struct ProfileTierLevel {
     /// Main (0)
     tier_flag: bool,
 
@@ -499,12 +530,13 @@ struct ProfileTierLevel {
 
 impl ProfileTierLevel {
     fn from_bitstream(bitstream: &Bitstream) -> Self {
-        let mut ptl = ProfileTierLevel::default();
-        ptl.tier_flag = bitstream.read(1) != 0; // u(1)
-        ptl.profile_codec_group_idc = bitstream.read(7) as u8; // u(7)
-        ptl.profile_toolset_idc = bitstream.read(8) as u8; // u(8)
-        ptl.profile_reconstruction_idc = bitstream.read(8) as u8; // u(8)
-
+        let mut ptl = ProfileTierLevel {
+            tier_flag: bitstream.read(1) != 0,                   // u(1)
+            profile_codec_group_idc: bitstream.read(7) as u8,    // u(7)
+            profile_toolset_idc: bitstream.read(8) as u8,        // u(8)
+            profile_reconstruction_idc: bitstream.read(8) as u8, // u(8)
+            ..Default::default()
+        };
         // reserved 32 zero bits
         bitstream.move_to_next_byte();
         bitstream.move_to_next_byte();
@@ -513,23 +545,29 @@ impl ProfileTierLevel {
 
         ptl.level_idc = bitstream.read(8) as u8; // u(8)
                                                  // ptl.num_sub_profiles =
-        bitstream.read(6) as u8; // u(6)
-                                 // ptl.extended_sub_profile_flag =
-        bitstream.read(1) != 0; // u(1)
-                                // ptl.sub_profile_idc
-                                //     .reserve_exact(ptl.num_sub_profiles as usize);
-                                // for _ in 0..ptl.num_sub_profiles {
-                                //     assert!(!ptl.extended_sub_profile_flag);
-                                //     ptl.sub_profile_idc.push(bitstream.read(32) as u8); // u(8)
-                                // }
+        assert!(
+            bitstream.read(6) as u8 == 0,
+            "(9Dec22) ptl subprofiles not supported"
+        ); // u(6)
+           // ptl.extended_sub_profile_flag =
+        let _ = bitstream.read(1) != 0; // u(1)
+                                        // ptl.sub_profile_idc
+                                        //     .reserve_exact(ptl.num_sub_profiles as usize);
+                                        // for _ in 0..ptl.num_sub_profiles {
+                                        //     assert!(!ptl.extended_sub_profile_flag);
+                                        //     ptl.sub_profile_idc.push(bitstream.read(32) as u8); // u(8)
+                                        // }
 
         // ptl.tool_constraints_present_flag =
-        bitstream.read(1) != 0; // u(1)
-                                // if ptl.tool_constraints_present_flag {
-                                //     unimplemented!("profile toolset constraints information unimplemented")
-                                //     // ptl.profile_toolset_constraints_information =
-                                //     //     ProfileToolsetConstraintsInformation::from_bitstream(bitstream);
-                                // }
+        assert!(
+            bitstream.read(1) == 0,
+            "(9Dec22) ptl toolset constraints information not supported"
+        ); // u(1)
+           // if ptl.tool_constraints_present_flag {
+           //     unimplemented!("profile toolset constraints information unimplemented")
+           //     // ptl.profile_toolset_constraints_information =
+           //     //     ProfileToolsetConstraintsInformation::from_bitstream(bitstream);
+           // }
         ptl
     }
 }
@@ -552,18 +590,20 @@ struct ProfileToolsetConstraintsInformation {
 
 impl ProfileToolsetConstraintsInformation {
     pub fn from_bitstream(bitstream: &Bitstream) -> Self {
-        let mut ptci = ProfileToolsetConstraintsInformation::default();
-        ptci.one_frame_only_flag = bitstream.read(1) != 0; // u(1)
-        ptci.eom_constraint_flag = bitstream.read(1) != 0; // u(1)
-        ptci.max_map_count_minus_1 = bitstream.read(4) as u8; // u(4)
-        ptci.max_atlas_count_minus_1 = bitstream.read(4) as u8; // u(4)
-        ptci.multiple_map_streams_constraint_flag = bitstream.read(1) != 0; // u(1)
-        ptci.plr_constraint_flag = bitstream.read(1) != 0; // u(1)
-        ptci.attribute_max_dimension_minus_1 = bitstream.read(6) as u8; // u(6)
-        ptci.attribute_max_dimension_partitions_minus_1 = bitstream.read(6) as u8; // u(6)
+        let mut ptci = ProfileToolsetConstraintsInformation {
+            one_frame_only_flag: bitstream.read(1) != 0,      // u(1)
+            eom_constraint_flag: bitstream.read(1) != 0,      // u(1)
+            max_map_count_minus_1: bitstream.read(4) as u8,   // u(4)
+            max_atlas_count_minus_1: bitstream.read(4) as u8, // u(4)
+            multiple_map_streams_constraint_flag: bitstream.read(1) != 0, // u(1)
+            plr_constraint_flag: bitstream.read(1) != 0,      // u(1)
+            attribute_max_dimension_minus_1: bitstream.read(6) as u8, // u(6)
+            attribute_max_dimension_partitions_minus_1: bitstream.read(6) as u8, // u(6)
 
-        ptci.no_eight_orientations_constraint_flag = bitstream.read(1) != 0; // u(1)
-        ptci.no_45deg_projection_patch_constraint_flag = bitstream.read(1) != 0; // u(1)
+            no_eight_orientations_constraint_flag: bitstream.read(1) != 0, // u(1)
+            no_45deg_projection_patch_constraint_flag: bitstream.read(1) != 0, // u(1)
+            ..Default::default()
+        };
         bitstream.byte_align();
 
         ptci.num_reserved_constraint_bytes = bitstream.read(8) as u8; // u(8)
@@ -612,8 +652,10 @@ impl SampleStreamV3CUnit {
 
     /// Reads a V3CUnit from the bitstream
     fn read_v3c_unit(bitstream: &Bitstream, precision_bytes: u8) -> V3CUnit {
-        let mut v3c_unit = V3CUnit::default();
-        v3c_unit.size = bitstream.read(8 * precision_bytes) as usize;
+        let mut v3c_unit = V3CUnit {
+            size: bitstream.read(8 * precision_bytes) as usize,
+            ..Default::default()
+        };
         v3c_unit
             .bitstream
             .copy_from(bitstream, bitstream.bytes(), v3c_unit.size);
@@ -626,7 +668,7 @@ impl SampleStreamV3CUnit {
             "[v3c_unit] size: {}, type: {:?}",
             v3c_unit.size, v3c_unit.unit_type
         );
-        return v3c_unit;
+        v3c_unit
     }
 
     /// Originally PCCBitstreamReader::decode
@@ -640,12 +682,12 @@ impl SampleStreamV3CUnit {
             let unit = &mut self.front();
             let v3c_unit_type = unit.decode(syntax);
             match v3c_unit_type {
-                V3CUnitType::VPS => {
+                V3CUnitType::V3cParameterSet => {
                     num_vps += 1;
                     if num_vps > 1 {
                         // remove the bits counted for the last VPS
                         // let v3c_unit_size = unit.bitstream.size();
-                        // TODO: let stat_size = bitstream_stat.overwrite_v3c_unit_size
+                        // TODO[stat]: let stat_size = bitstream_stat.overwrite_v3c_unit_size
 
                         // Each V3C Unit only contains 1 VPS. In the reference implementation, we trackback.
                         // However, this causes `unit.decode(syntax)` line above to be evaluated twice.
@@ -666,7 +708,7 @@ impl SampleStreamV3CUnit {
     }
 
     fn front(&self) -> &V3CUnit {
-        self.units.front().unwrap().clone()
+        self.units.front().unwrap()
     }
 
     fn pop_front(&mut self) {
@@ -735,12 +777,12 @@ impl NalUnit {
             data: vec![0; nalu_size - 2],
         };
         match nalu.unit_type {
-            NalUnitType::ASPS => {
+            NalUnitType::Asps => {
                 syntax.add_atlas_sequence_parameter_set(
                     AtlasSequenceParameterSetRbsp::from_bitstream(bitstream),
                 );
             }
-            NalUnitType::AFPS => {
+            NalUnitType::Afps => {
                 syntax.add_atlas_frame_parameter_set(AtlasFrameParameterSetRbsp::from_bitstream(
                     syntax, bitstream,
                 ));
@@ -822,10 +864,10 @@ enum NalUnitType {
     // RsvAclR15,
 
     /// 16-18: Coded tile of a BLA (Broken Link Access) atlas frame, ACL
-    /// A BLA coded atlas does NOT use inter prediction in its decoding process
-    /// could be the first coded atlas in the bitstream in decoding order, or could appear later in the bitstream
-    /// Each BLA coded atlas begins a new CAS (Coded Atlas Sequence),
-    /// has the same effect on the decoding process as an instantaneous decoding refresh (IDR) coded atlas.
+    ///
+    /// A BLA coded atlas does NOT use inter prediction in its decoding process, i.e. I-frame
+    /// Each BLA coded atlas begins a new CAS (Coded Atlas Sequence) and
+    /// it has the same effect on the decoding process as an instantaneous decoding refresh (IDR) coded atlas.
     BlaWLp = 16,
     BlaWRadl,
     BlaNLp,
@@ -835,22 +877,21 @@ enum NalUnitType {
     GblaNLp,
 
     /// 22-23: Coded tile of a IDR (Instantaneous Decoding Refresh) atlas frame ACL
-    /// An IDR Coded atlas does not refer to any atlases other than itself for inter prediction in its decoding process
-    /// may be the first atlas in the bitstream in decoding order, or may appear later in the bitstream
+    /// An IDR Coded atlas does not refer to any atlases other than itself for inter prediction in its decoding process, i.e. I-frame
     IdrWRadl,
     IdrNLp,
     /// 24-25: Coded tile of a GIDR(Global Instantaneous Decoding Refresh) atlas frame, ACL
     GidrWRadl,
     GidrNLp,
 
-    /// 26: Coded tile of a CRA (Clean Random Access) atlas frame, ACL
-    /// A CRA coded atlas does not use inter prediction in its decoding process
-    /// may be the first coded atlas in the bitstream in decoding order, or could appear later in the bitstream.
-    /// could have associated RADL / RASL-coded atlas frames
-    CRA,
+    /// 26: Coded tile of a CRA (Clean Random Access) atlas frame, ACL.
+    ///
+    /// A CRA coded atlas does not use inter prediction in its decoding process, i.e. I-frame,
+    /// It could have associated RADL / RASL-coded atlas frames
+    Cra,
     /// 27: Coded tile of a GCRA (Global Clean Random Access) atlas frame, ACL
     /// access unit in which the coded atlas (3.34) with nal_layer_id equal to 0 is a GCRA coded atlas (3.63)
-    GCRA,
+    Gcra,
 
     /// 28-29: Reserved IRAP (Intra Random Access Point) ACL NAL unit types. ACL
     // RsvIrapAcl28,
@@ -864,22 +905,22 @@ enum NalUnitType {
     // RsvAcl35,
 
     /// 36: Atlas sequence parameter set, non-ACL
-    ASPS = 36,
+    Asps = 36,
 
     /// 37: Atlas frame parameter set, non-ACL
-    AFPS,
+    Afps,
 
     /// 38: Access unit delimiter, non-ACL
-    AUD,
+    Aud,
     /// 39: V3C access unit delimiter, non-ACL
-    V3cAUD,
+    V3cAud,
 
     /// 40: End of sequence, non-ACL
-    EOS,
+    Eos,
     /// 41: End of bitstream, non-ACL        
-    EOB,
+    Eob,
     /// 42: Filler data, non-ACL         
-    FD,
+    Fd,
 
     /// 43-44: Non-essential supplemental enhancement information, non-ACL         
     PrefixNSEI,
@@ -889,37 +930,37 @@ enum NalUnitType {
     SuffixESEI,
 
     /// 47: Atlas adaptation parameter set, non-ACL
-    AAPS,
+    Aaps,
 }
 
 /// Rbsp: Raw bit payload
 pub(crate) struct AtlasSequenceParameterSetRbsp {
     atlas_sequence_parameter_set_id: u8,
-    frame_width: u16,
-    frame_height: u16,
-    geometry_2d_bitdepth_minus1: u8,
-    geometry_3d_bitdepth_minus1: u8,
-    log2_max_atlas_frame_order_cnt_lsb_minus_4: u8,
+    pub(crate) frame_width: u16,
+    pub(crate) frame_height: u16,
+    pub(crate) geometry_2d_bitdepth_minus1: u8,
+    pub(crate) geometry_3d_bitdepth_minus1: u8,
+    pub(crate) log2_max_atlas_frame_order_cnt_lsb_minus_4: u8,
     max_dec_atlas_frame_buffering_minus_1: u8,
     long_term_ref_atlas_frames_flag: bool,
     num_ref_atlas_frame_lists_in_asps: u8,
-    pub(super) ref_list_struct: Vec<RefListStruct>,
+    pub(crate) ref_list_struct: Vec<RefListStruct>,
     use_eight_orientations_flag: bool,
-    extended_projection_enabled_flag: bool,
+    pub(crate) extended_projection_enabled_flag: bool,
     max_number_projections_minus_1: usize,
     normal_axis_limits_quantization_enabled_flag: bool,
     normal_axis_max_delta_value_enabled_flag: bool,
     patch_precedence_order_flag: bool,
-    log2_patch_packing_block_size: u8,
-    patch_size_quantizer_present_flag: bool,
+    pub(crate) log2_patch_packing_block_size: u8,
+    pub(crate) patch_size_quantizer_present_flag: bool,
     map_count_minus_1: u8,
     pixel_deinterleaving_flag: bool,
-    pixel_deinterleaving_map_flag: Vec<bool>,
+    // pixel_deinterleaving_map_flag: Vec<bool>,
     eom_patch_enabled_flag: bool,
     eom_fix_bit_count_minus1: u8,
-    raw_patch_enabled_flag: bool,
-    auxiliary_video_enabled_flag: bool,
-    plr_enabled_flag: bool,
+    pub(crate) raw_patch_enabled_flag: bool,
+    pub(crate) auxiliary_video_enabled_flag: bool,
+    pub(crate) plr_enabled_flag: bool,
     // plr_information: Vec<PLRInformation>,
     vui_parameters_present_flag: bool,
     extension_flag: bool,
@@ -952,7 +993,7 @@ impl Default for AtlasSequenceParameterSetRbsp {
             patch_size_quantizer_present_flag: false,
             map_count_minus_1: 0,
             pixel_deinterleaving_flag: false,
-            pixel_deinterleaving_map_flag: Vec::new(),
+            // pixel_deinterleaving_map_flag: Vec::new(),
             eom_patch_enabled_flag: false,
             eom_fix_bit_count_minus1: 0,
             raw_patch_enabled_flag: false,
@@ -991,6 +1032,7 @@ impl AtlasSequenceParameterSetRbsp {
         }
         asps.use_eight_orientations_flag = bitstream.read(1) != 0;
         asps.extended_projection_enabled_flag = bitstream.read(1) != 0;
+        assert!(!asps.extended_projection_enabled_flag);
         if asps.extended_projection_enabled_flag {
             asps.max_number_projections_minus_1 = bitstream.read_uvlc() as usize;
         }
@@ -999,37 +1041,54 @@ impl AtlasSequenceParameterSetRbsp {
         asps.patch_precedence_order_flag = bitstream.read(1) != 0;
         asps.log2_patch_packing_block_size = bitstream.read(3) as u8;
         asps.patch_size_quantizer_present_flag = bitstream.read(1) != 0;
+        assert!(!asps.patch_size_quantizer_present_flag);
         asps.map_count_minus_1 = bitstream.read(4) as u8;
         asps.pixel_deinterleaving_flag = bitstream.read(1) != 0;
+        assert!(!asps.pixel_deinterleaving_flag);
         if asps.pixel_deinterleaving_flag {
-            asps.pixel_deinterleaving_map_flag =
-                Vec::with_capacity(asps.map_count_minus_1 as usize + 1);
-            for _ in 0..asps.map_count_minus_1 + 1 {
-                asps.pixel_deinterleaving_map_flag
-                    .push(bitstream.read(1) != 0);
-            }
+            unimplemented!("pixel_deinterleaving_flag");
+            // asps.pixel_deinterleaving_map_flag =
+            //     Vec::with_capacity(asps.map_count_minus_1 as usize + 1);
+            // for _ in 0..asps.map_count_minus_1 + 1 {
+            //     asps.pixel_deinterleaving_map_flag
+            //         .push(bitstream.read(1) != 0);
+            // }
         }
         asps.raw_patch_enabled_flag = bitstream.read(1) != 0;
         asps.eom_patch_enabled_flag = bitstream.read(1) != 0;
+        // (13Dec22)
+        assert!(!asps.raw_patch_enabled_flag);
+        assert!(!asps.eom_patch_enabled_flag);
+
         if asps.eom_patch_enabled_flag && asps.map_count_minus_1 == 0 {
             asps.eom_fix_bit_count_minus1 = bitstream.read(4) as u8;
         }
         if asps.raw_patch_enabled_flag || asps.eom_patch_enabled_flag {
             asps.auxiliary_video_enabled_flag = bitstream.read(1) != 0;
         }
+        // (13Dec22)
+        assert!(!asps.auxiliary_video_enabled_flag);
+
         asps.plr_enabled_flag = bitstream.read(1) != 0;
+        // (13Dec22)
+        assert!(!asps.plr_enabled_flag);
         if asps.plr_enabled_flag {
             unimplemented!("PLR not implemented");
         }
+
         asps.vui_parameters_present_flag = bitstream.read(1) != 0;
+        // (13Dec22)
+        assert!(!asps.vui_parameters_present_flag);
         if asps.vui_parameters_present_flag {
             unimplemented!("VUI parameters are not implemented");
         }
+
         asps.extension_flag = bitstream.read(1) != 0;
         if asps.extension_flag {
             asps.vpcc_extension_flag = bitstream.read(1) != 0;
             asps.extension_7bits = bitstream.read(7) as u8;
         }
+
         if asps.vpcc_extension_flag {
             asps.asps_vpcc_extension = AspsVpccExtension {
                 remove_duplicate_point_enabled_flag: bitstream.read(1) != 0,
@@ -1110,10 +1169,10 @@ struct AspsVpccExtension {
 #[derive(Default)]
 pub(crate) struct AtlasFrameParameterSetRbsp {
     atlas_frame_parameter_set_id: u8,
-    pub(super) atlas_sequence_parameter_set_id: u8,
-    atlas_frame_tile_information: AtlasFrameTileInformation,
+    pub(crate) atlas_sequence_parameter_set_id: u8,
+    pub(crate) atlas_frame_tile_information: AtlasFrameTileInformation,
     output_flag_present_flag: bool,
-    pub(super) num_ref_idx_default_active_minus_1: u8,
+    pub(crate) num_ref_idx_default_active_minus_1: u8,
     additional_lt_afoc_lsb_len: u8,
     lod_mode_enable_flag: bool,
     raw_3d_offset_bitcount_explicit_mode_flag: bool,
@@ -1138,7 +1197,6 @@ impl AtlasFrameParameterSetRbsp {
         afps.raw_3d_offset_bitcount_explicit_mode_flag = bitstream.read(1) != 0;
         afps.extension_flag = bitstream.read(1) != 0;
         if afps.extension_flag {
-            // unimplemented!("afps extension not implemented");
             afps.extension_8bits = bitstream.read(8) as u8;
         }
         if afps.extension_8bits > 0 {
@@ -1151,35 +1209,57 @@ impl AtlasFrameParameterSetRbsp {
 
 /// 8.3.6.2.2 Atlas Frame Tile Information Syntax
 #[derive(Default)]
-struct AtlasFrameTileInformation {
-    single_tile_in_atlas_frame_flag: bool,
+pub(crate) struct AtlasFrameTileInformation {
+    /// If true, there is only 1 tile in each atlas frame (i.e. no partitioning)
+    ///
+    /// (12Dec22) Atlas Frame partition not implemented, i.e. this field is always true.
+    pub single_tile_in_atlas_frame_flag: bool,
     uniform_partition_spacing_flag: bool,
     num_partition_columns_minus_1: u32,
     num_partition_rows_minus_1: u32,
     single_partition_per_tile_flag: u32,
-    num_tiles_in_atlas_frame_minus_1: u32,
-    signalled_tile_id_flag: bool,
+    /// Since single_tile_in_atlas_frame is always true, this field is always 0
+    pub num_tiles_in_atlas_frame_minus_1: u32,
+    /// (12Dec22) This field always returns false
+    pub signalled_tile_id_flag: bool,
     signalled_tile_id_length_minus_1: u8,
+    /// if uniform_partition_spacing_flag is false, partition_column_width_minus_1 will store the column width of columns 0..=num_partition_columns_minus_1
+    ///
+    /// Used only in PCCDecoder::setTilePartitionSizeAfti
     partition_column_width_minus_1: Vec<u32>,
+    /// if uniform_partition_spacing_flag is false, partition_row_height_minus_1 will store the row height of columns 0..=num_partition_rows_minus_1
+    ///
+    /// Used only in PCCDecoder::setTilePartitionSizeAfti
     partition_row_height_minus_1: Vec<u32>,
     top_left_partition_idx: Vec<u32>,
     bottom_right_partition_column_offset: Vec<u32>,
     bottom_right_partition_row_offset: Vec<u32>,
-    tile_id: Vec<u32>,
+    // (13Dec22) tile_id is used only if signalled_tile_id_flag is true or in eom / raw patch data unit.
+    // all of which is not supported for now.
+    // Combined with num_tiles_in_atlas = 1, all references to tile_id should just return 0.
+    // tile_id: Vec<u32>,
     auxiliary_video_tile_row_width_minus_1: u32,
     auxiliary_video_tile_row_height: Vec<u32>,
-    col_width: Vec<usize>,
-    row_height: Vec<usize>,
-    partition_pos_x: Vec<usize>,
-    partition_pos_y: Vec<usize>,
+
+    /// (12Dec22) Since single_tile_in_atlas_frame_flag is always true, these fields always have size 1.
+    /// DIFF: changed to non-vec fields
+    col_width: u16,
+    row_height: u16,
+    partition_pos: (usize, usize),
 }
 
 impl AtlasFrameTileInformation {
     fn from_bitstream(bitstream: &Bitstream, asps: &AtlasSequenceParameterSetRbsp) -> Self {
-        let mut afti = AtlasFrameTileInformation::default();
-        afti.single_tile_in_atlas_frame_flag = bitstream.read(1) != 0;
+        let mut afti = AtlasFrameTileInformation {
+            single_tile_in_atlas_frame_flag: bitstream.read(1) != 0,
+            ..Default::default()
+        };
+        assert!(
+            afti.single_tile_in_atlas_frame_flag,
+            "(12Dec22) Atlas Frame partition not implemented"
+        );
         if !afti.single_tile_in_atlas_frame_flag {
-            unimplemented!("TODO");
+            unimplemented!("Atlas Frame partition not implemented");
         } else {
             afti.num_tiles_in_atlas_frame_minus_1 = 0;
         }
@@ -1193,20 +1273,51 @@ impl AtlasFrameTileInformation {
             }
         }
         afti.signalled_tile_id_flag = bitstream.read(1) != 0;
-        afti.tile_id
-            .reserve_exact(afti.num_tiles_in_atlas_frame_minus_1 as usize + 1);
+        assert!(
+            !afti.signalled_tile_id_flag,
+            "(12Dec22) signalled_tile_id_flag always false"
+        );
+        // afti.tile_id
+        //     .reserve_exact(afti.num_tiles_in_atlas_frame_minus_1 as usize + 1);
         if afti.signalled_tile_id_flag {
             afti.signalled_tile_id_length_minus_1 = bitstream.read_uvlc() as u8;
-            for _ in 0..afti.num_tiles_in_atlas_frame_minus_1 + 1 {
-                afti.tile_id
-                    .push(bitstream.read(afti.signalled_tile_id_length_minus_1 + 1));
-            }
+            // for _ in 0..=afti.num_tiles_in_atlas_frame_minus_1 {
+            //     afti.tile_id
+            //         .push(bitstream.read(afti.signalled_tile_id_length_minus_1 + 1));
+            // }
+            // afti.tile_id = v;
         } else {
-            for i in 0..afti.num_tiles_in_atlas_frame_minus_1 + 1 {
-                afti.tile_id.push(i);
-            }
+            // see comments on afti.tile_id
+
+            // for i in 0..=afti.num_tiles_in_atlas_frame_minus_1 {
+            //     afti.tile_id.push(i);
+            // }
         }
         afti
+    }
+
+    #[inline]
+    pub(crate) fn set_partition_width(&mut self, index: usize, width: u16) {
+        assert!(index == 0);
+        self.col_width = width;
+    }
+
+    #[inline]
+    pub(crate) fn get_partition_width(&self, index: usize) -> u16 {
+        assert!(index == 0);
+        self.col_width
+    }
+
+    #[inline]
+    pub(crate) fn set_partition_height(&mut self, index: usize, height: u16) {
+        assert!(index == 0);
+        self.row_height = height;
+    }
+
+    #[inline]
+    pub(crate) fn get_partition_height(&self, index: usize) -> u16 {
+        assert!(index == 0);
+        self.row_height
     }
 }
 
@@ -1293,7 +1404,7 @@ impl SeiRbsp {
         };
 
         bitstream.byte_align();
-        // FIXME (3Dec): somehow the tmc2 calls rbspTrailingBits after this which I can't find in the source code. super strange.
+        // FIXME (3Dec22): somehow the tmc2 calls rbspTrailingBits after this which I can't find in the source code. super strange.
         // so added the following line which achieves the same effect as a hack.
         bitstream.read(8);
         sei_rbsp
@@ -1301,7 +1412,7 @@ impl SeiRbsp {
 }
 
 /// Annex E: Supplemental Enhancement Information
-/// F.2.1. General SEI message syntax  <=> 7.3.8	Supplemental enhancement Information message
+/// F.2.1. General SEI message syntax  <=> 7.3.8 Supplemental enhancement Information message
 trait SEI {}
 
 /// H.20.2.19 Geometry smoothing SEI message syntax
@@ -1360,18 +1471,20 @@ impl SeiGeometrySmoothing {
 impl SEI for SeiGeometrySmoothing {}
 
 /// 8.3.6.9  Atlas tile group layer (ATGL) Rbsp syntax
+///
+/// Stores the atlas data for each frame (and each tile in it)
 pub(crate) struct AtlasTileLayerRbsp {
-    header: AtlasTileHeader,
+    pub(crate) header: AtlasTileHeader,
     /// assert!(self.tile_order == data_unit.tile_order)
-    data_unit: AtlasTileDataUnit,
-    atlas_frame_order_count_val: usize,
-    atlas_frame_order_cnt_msb: usize,
+    pub(crate) data_unit: AtlasTileDataUnit,
+    pub(crate) atlas_frame_order_count_val: u32,
+    pub(crate) atlas_frame_order_count_msb: u32,
     /// index in AtlasTileLayer
     // pub tile_order: usize,
     /// Frame Index (only used for encoding)
-    pub enc_frame_index: usize,
+    enc_frame_index: usize,
     /// Tile Index (only used for encoding)
-    pub enc_tile_index: usize,
+    enc_tile_index: usize,
     // sei: SeiRbsp,
 }
 
@@ -1385,7 +1498,7 @@ impl AtlasTileLayerRbsp {
             data_unit,
             enc_frame_index: usize::MAX,
             enc_tile_index: usize::MAX,
-            atlas_frame_order_cnt_msb: 0,
+            atlas_frame_order_count_msb: 0,
             atlas_frame_order_count_val: 0,
             // FIXME: do we need to set tile order?
             // tile_order: 0,
@@ -1397,25 +1510,25 @@ impl AtlasTileLayerRbsp {
 #[derive(Default, Debug)]
 pub(crate) struct AtlasTileHeader {
     no_output_of_prior_atlas_frames_flag: bool,
-    frame_index: u8,
-    pub(super) atlas_frame_parameter_set_id: u8,
+    pub(crate) frame_index: u8,
+    pub(crate) atlas_frame_parameter_set_id: u8,
     atlas_adaptation_parameter_set_id: u8,
-    id: u32,
-    pub(super) tile_type: TileType,
+    pub(crate) id: u32,
+    pub(crate) tile_type: TileType,
     atlas_output_flag: bool,
-    atlas_frame_order_count_lsb: usize,
-    pub(super) ref_atlas_frame_list_sps_flag: bool,
-    pub(super) ref_atlas_frame_list_idx: u8,
+    pub(crate) atlas_frame_order_count_lsb: u32,
+    pub(crate) ref_atlas_frame_list_sps_flag: bool,
+    pub(crate) ref_atlas_frame_list_idx: u8,
     additional_afoc_lsb_present_flag: Vec<bool>,
     additional_afoc_lsb_val: Vec<u8>,
-    pos_min_d_quantizer: u8,
+    pub(crate) pos_min_d_quantizer: u8,
     pos_delta_max_d_quantizer: u8,
-    patch_size_x_info_quantizer: u8,
-    patch_size_y_info_quantizer: u8,
+    /// This is later copied to TileContext::log2_patch_quantizer
+    pub(crate) patch_size_info_quantizer: (u8, u8),
     raw_3d_offset_axis_bitcount_minus1: u8,
-    pub(super) num_ref_idx_active_override_flag: bool,
-    pub(super) num_ref_idx_active_minus_1: u8,
-    pub(super) ref_list_struct: RefListStruct,
+    pub(crate) num_ref_idx_active_override_flag: bool,
+    pub(crate) num_ref_idx_active_minus_1: u8,
+    pub(crate) ref_list_struct: RefListStruct,
     tile_nalu_type_info: u8,
 }
 
@@ -1423,7 +1536,7 @@ impl AtlasTileHeader {
     fn from_bitstream(syntax: &Context, bitstream: &Bitstream, nal_unit_type: NalUnitType) -> Self {
         let mut ath = AtlasTileHeader::default();
         if nal_unit_type as u8 >= NalUnitType::BlaWLp as u8
-            && nal_unit_type as u8 <= NalUnitType::GCRA as u8
+            && nal_unit_type as u8 <= NalUnitType::Gcra as u8
         {
             ath.no_output_of_prior_atlas_frames_flag = bitstream.read(1) != 0;
         }
@@ -1444,15 +1557,12 @@ impl AtlasTileHeader {
 
         if afti.signalled_tile_id_flag {
             ath.id = bitstream.read(afti.signalled_tile_id_length_minus_1 + 1);
+        } else if afti.num_tiles_in_atlas_frame_minus_1 != 0 {
+            let bit_count =
+                fast_math::log2_raw(afti.num_tiles_in_atlas_frame_minus_1 as f32 + 1.).ceil() as u8;
+            ath.id = bitstream.read(bit_count);
         } else {
-            if afti.num_tiles_in_atlas_frame_minus_1 != 0 {
-                let bit_count =
-                    fast_math::log2_raw(afti.num_tiles_in_atlas_frame_minus_1 as f32 + 1.).ceil()
-                        as u8;
-                ath.id = bitstream.read(bit_count);
-            } else {
-                ath.id = 0;
-            }
+            ath.id = 0;
         }
 
         ath.tile_type = TileType::from(bitstream.read_uvlc() as u8);
@@ -1463,7 +1573,7 @@ impl AtlasTileHeader {
         }
 
         ath.atlas_frame_order_count_lsb =
-            bitstream.read(asps.log2_max_atlas_frame_order_cnt_lsb_minus_4 + 4) as usize;
+            bitstream.read(asps.log2_max_atlas_frame_order_cnt_lsb_minus_4 + 4);
         if asps.num_ref_atlas_frame_lists_in_asps > 0 {
             ath.ref_atlas_frame_list_sps_flag = bitstream.read(1) != 0;
         } else {
@@ -1519,8 +1629,7 @@ impl AtlasTileHeader {
                 }
             }
             if asps.patch_size_quantizer_present_flag {
-                ath.patch_size_x_info_quantizer = bitstream.read(3) as u8;
-                ath.patch_size_y_info_quantizer = bitstream.read(3) as u8;
+                ath.patch_size_info_quantizer = (bitstream.read(3) as u8, bitstream.read(3) as u8);
             }
             if afps.raw_3d_offset_bitcount_explicit_mode_flag {
                 let bit_count =
@@ -1545,9 +1654,9 @@ impl AtlasTileHeader {
     }
 }
 
-#[derive(Default, Debug, PartialEq, FromPrimitive)]
+#[derive(Default, Debug, PartialEq, FromPrimitive, Clone, Copy)]
 #[repr(u8)]
-pub(super) enum TileType {
+pub(crate) enum TileType {
     /// Inter atlas tile
     #[default]
     P = 0,
@@ -1558,10 +1667,10 @@ pub(super) enum TileType {
 }
 
 /// 8.3.7.1  General atlas tile data unit
-struct AtlasTileDataUnit {
+pub(crate) struct AtlasTileDataUnit {
     /// assert!(self.tile_order == patch_information_data[i].tile_order)
     // tile_order: usize,
-    patch_information_data: Vec<PatchInformationData>,
+    pub(crate) patch_information_data: Vec<PatchInformationData>,
 }
 
 impl AtlasTileDataUnit {
@@ -1595,7 +1704,7 @@ impl AtlasTileDataUnit {
 
 #[derive(Debug, FromPrimitive)]
 #[repr(u8)]
-enum PatchModeITile {
+pub(crate) enum PatchModeITile {
     /// 0: Non-predicted patch mode
     #[default]
     Intra,
@@ -1610,7 +1719,7 @@ enum PatchModeITile {
 
 #[derive(Debug, FromPrimitive)]
 #[repr(u8)]
-enum PatchModePTile {
+pub(crate) enum PatchModePTile {
     #[default]
     /// 0: Patch skip mode
     Skip,
@@ -1630,15 +1739,15 @@ enum PatchModePTile {
 
 /// 8.3.7.2  Patch information data syntax (pid)
 #[derive(Debug)]
-struct PatchInformationData {
+pub(crate) struct PatchInformationData {
     // tile_order: usize,
-    patch_index: usize,
-    patch_mode: u8,
-    patch_data_unit: PatchDataUnit,
+    // patch_index: usize,
+    pub(crate) patch_mode: u8,
+    pub(crate) patch_data_unit: PatchDataUnit,
 }
 
 #[derive(Debug)]
-enum PatchDataUnit {
+pub(crate) enum PatchDataUnit {
     Intra(IntraPatchDataUnit),
     Inter(InterPatchDataUnit),
     Merge(MergePatchDataUnit),
@@ -1659,7 +1768,7 @@ impl PatchInformationData {
             TileType::P => match PatchModePTile::from(patch_mode) {
                 PatchModePTile::Merge => Some(PatchInformationData {
                     // tile_order: 0,
-                    patch_index: 0,
+                    // patch_index: 0,
                     patch_mode,
                     patch_data_unit: PatchDataUnit::Merge(MergePatchDataUnit::from_bitstream(
                         syntax, bitstream, ath,
@@ -1667,7 +1776,7 @@ impl PatchInformationData {
                 }),
                 PatchModePTile::Inter => Some(PatchInformationData {
                     // tile_order: 0,
-                    patch_index: 0,
+                    // patch_index: 0,
                     patch_mode,
                     patch_data_unit: PatchDataUnit::Inter(InterPatchDataUnit::from_bitstream(
                         syntax, bitstream, ath,
@@ -1675,7 +1784,7 @@ impl PatchInformationData {
                 }),
                 PatchModePTile::Intra => Some(PatchInformationData {
                     // tile_order: 0,
-                    patch_index: 0,
+                    // patch_index: 0,
                     patch_mode,
                     patch_data_unit: PatchDataUnit::Intra(IntraPatchDataUnit::from_bitstream(
                         syntax, bitstream, ath,
@@ -1683,7 +1792,7 @@ impl PatchInformationData {
                 }),
                 PatchModePTile::Skip => Some(PatchInformationData {
                     // tile_order: 0,
-                    patch_index: 0,
+                    // patch_index: 0,
                     patch_mode,
                     patch_data_unit: PatchDataUnit::Skip(SkipPatchDataUnit::default()),
                 }),
@@ -1692,7 +1801,7 @@ impl PatchInformationData {
             TileType::I => match PatchModeITile::from(patch_mode) {
                 PatchModeITile::Intra => Some(PatchInformationData {
                     // tile_order: 0,
-                    patch_index: 0,
+                    // patch_index: 0,
                     patch_mode,
                     patch_data_unit: PatchDataUnit::Intra(IntraPatchDataUnit::from_bitstream(
                         syntax, bitstream, ath,
@@ -1708,20 +1817,17 @@ impl PatchInformationData {
 /// 8.3.7.3  Patch data unit syntax
 /// Originally: PatchDataUnit. Used with patch_mode P_INTRA or I_INTRA
 #[derive(Default, Debug)]
-struct IntraPatchDataUnit {
-    projection_id: usize,
-    orientation_index: u8,
-    // lod_enabled_flag: bool,
+pub(crate) struct IntraPatchDataUnit {
+    pub(crate) projection_id: u8,
+    pub(crate) orientation_index: PatchOrientation,
+    pub(crate) lod_enabled_flag: bool,
     // lod_scale_x_minus_1: usize,
     // lod_scale_y_idc: u8,
-    pos_2d_x: usize,
-    pos_2d_y: usize,
-    size_2d_x_minus_1: usize,
-    size_2d_y_minus_1: usize,
-    pos_3d_offset_u: usize,
-    pos_3d_offset_v: usize,
-    pos_3d_offset_d: usize,
-    pos_3d_range_d: usize,
+    pub(crate) pos_2d: (usize, usize),          // (x,y)
+    pub(crate) size_2d_minus_1: (usize, usize), // (x,y)
+    pub(crate) pos_3d_offset: (usize, usize),   // (u,v)
+    pub(crate) pos_3d_offset_d: usize,
+    pub(crate) pos_3d_range_d: usize,
     // point_local_reconstruction_data: PLRData,
     // patch_index: usize,
     // frame_index: usize,
@@ -1737,12 +1843,18 @@ impl IntraPatchDataUnit {
         let bitcount_uv = asps.geometry_3d_bitdepth_minus1 + 1;
         let bitcount_d = asps.geometry_3d_bitdepth_minus1 - ath.pos_min_d_quantizer + 1;
 
-        pdu.pos_2d_x = bitstream.read_uvlc() as usize;
-        pdu.pos_2d_y = bitstream.read_uvlc() as usize;
-        pdu.size_2d_x_minus_1 = bitstream.read_uvlc() as usize;
-        pdu.size_2d_y_minus_1 = bitstream.read_uvlc() as usize;
-        pdu.pos_3d_offset_u = bitstream.read(bitcount_uv) as usize;
-        pdu.pos_3d_offset_v = bitstream.read(bitcount_uv) as usize;
+        pdu.pos_2d = (
+            bitstream.read_uvlc() as usize,
+            bitstream.read_uvlc() as usize,
+        );
+        pdu.size_2d_minus_1 = (
+            bitstream.read_uvlc() as usize,
+            bitstream.read_uvlc() as usize,
+        );
+        pdu.pos_3d_offset = (
+            bitstream.read(bitcount_uv) as usize,
+            bitstream.read(bitcount_uv) as usize,
+        );
         pdu.pos_3d_offset_d = bitstream.read(bitcount_d) as usize;
 
         if asps.normal_axis_max_delta_value_enabled_flag {
@@ -1756,12 +1868,15 @@ impl IntraPatchDataUnit {
 
         pdu.projection_id = bitstream
             .read(fast_math::log2_raw(asps.max_number_projections_minus_1 as f32 + 1.).ceil() as u8)
-            as usize;
-        pdu.orientation_index = bitstream.read(if asps.use_eight_orientations_flag {
-            3
-        } else {
-            1
-        }) as u8;
+            as u8;
+        assert!(pdu.projection_id <= 5);
+        pdu.orientation_index =
+            PatchOrientation::from(bitstream.read(if asps.use_eight_orientations_flag {
+                3
+            } else {
+                1
+            }) as u8);
+
         if afps.lod_mode_enable_flag {
             unimplemented!("lod_mode_enable_flag")
         }
@@ -1773,16 +1888,13 @@ impl IntraPatchDataUnit {
 }
 
 #[derive(Default, Debug)]
-struct InterPatchDataUnit {
+pub(crate) struct InterPatchDataUnit {
     ref_index: usize,
     ref_patch_index: usize,
 
-    pos_2d_x: i32,
-    pos_2d_y: i32,
-    delta_2d_size_x: i32,
-    delta_2d_size_y: i32,
-    pos_3d_offset_u: i32,
-    pos_3d_offset_v: i32,
+    pos_2d: (i32, i32),        // (x, y)
+    delta_2d_size: (i32, i32), // (x, y)
+    pos_3d_offset: (i32, i32), // (u, v)
     pos_3d_offset_d: i32,
     pos_3d_range_d: i32,
     // point_local_reconstruction_data: PLRData,
@@ -1793,24 +1905,25 @@ struct InterPatchDataUnit {
 
 impl InterPatchDataUnit {
     fn from_bitstream(syntax: &Context, bitstream: &Bitstream, ath: &AtlasTileHeader) -> Self {
-        let mut pdu = InterPatchDataUnit::default();
         let afps = syntax.get_atlas_frame_parameter_set(ath.atlas_frame_parameter_set_id as usize);
         let asps =
             syntax.get_atlas_sequence_parameter_set(afps.atlas_sequence_parameter_set_id as usize);
         let num_ref_idx_active = syntax.get_num_ref_idx_active(ath);
 
-        if num_ref_idx_active > 1 {
-            pdu.ref_index = bitstream.read_uvlc() as usize;
-        }
-        pdu.ref_patch_index = bitstream.read_svlc() as usize;
+        let mut pdu = InterPatchDataUnit {
+            ref_index: if num_ref_idx_active > 1 {
+                bitstream.read_uvlc() as usize
+            } else {
+                0
+            },
+            ref_patch_index: bitstream.read_svlc() as usize,
+            pos_2d: (bitstream.read_svlc(), bitstream.read_svlc()),
+            delta_2d_size: (bitstream.read_svlc(), bitstream.read_svlc()),
+            pos_3d_offset: (bitstream.read_svlc(), bitstream.read_svlc()),
+            pos_3d_offset_d: bitstream.read_svlc(),
 
-        pdu.pos_2d_x = bitstream.read_svlc();
-        pdu.pos_2d_y = bitstream.read_svlc();
-        pdu.delta_2d_size_x = bitstream.read_svlc();
-        pdu.delta_2d_size_y = bitstream.read_svlc();
-        pdu.pos_3d_offset_u = bitstream.read_svlc();
-        pdu.pos_3d_offset_v = bitstream.read_svlc();
-        pdu.pos_3d_offset_d = bitstream.read_svlc();
+            ..Default::default()
+        };
 
         if asps.normal_axis_max_delta_value_enabled_flag {
             unimplemented!("normal_axis_max_delta_value_enabled_flag")
@@ -1824,7 +1937,7 @@ impl InterPatchDataUnit {
 }
 
 #[derive(Default, Debug)]
-struct MergePatchDataUnit {
+pub(crate) struct MergePatchDataUnit {
     override_2d_params_flag: bool,
     override_3d_params_flag: bool,
     override_plr_flag: bool,
@@ -1889,7 +2002,7 @@ impl MergePatchDataUnit {
 }
 
 #[derive(Default, Debug)]
-struct SkipPatchDataUnit {}
+pub(crate) struct SkipPatchDataUnit {}
 
 // #[derive(Default, Debug)]
 // struct RawPatchDataUnit {
@@ -1908,7 +2021,8 @@ struct SkipPatchDataUnit {}
 //     // tile_order: usize,
 // }
 
-/// Enhanced Occupancy Mode (EOM)
+// Enhanced Occupancy Mode (EOM)
+//
 // #[derive(Default, Debug)]
 // struct EOMPatchDataUnit {
 //     patch_in_auxiliary_video_flag: bool,
@@ -1926,11 +2040,11 @@ struct SkipPatchDataUnit {}
 //     // tile_order: usize,
 // }
 
-pub struct Reader {
-    prev_patch_size_u: i32,
-    prev_patch_size_v: i32,
-    pred_patch_idx: i32,
-    prev_frame_idx: i32,
-}
+// pub struct Reader {
+//     prev_patch_size_u: i32,
+//     prev_patch_size_v: i32,
+//     pred_patch_idx: i32,
+//     prev_frame_idx: i32,
+// }
 
-impl Reader {}
+// impl Reader {}

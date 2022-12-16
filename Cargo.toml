@@ -13,6 +13,7 @@ path = "src/lib.rs"
 clap = { version = "4.0.23", features = ["derive"] }
 log = "0.4.17"
 env_logger ={ version = "0.10.0", default-features=false }
+rayon = "1.6.0"
 cgmath = "0.18.0"
 fast-math = "0.1.1"
 num_enum = "0.5.7"

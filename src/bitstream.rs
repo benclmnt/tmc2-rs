@@ -83,16 +83,16 @@ impl Bitstream {
 
     /// Originally: Bitstream::size
     fn position_in_bytes(&self) -> usize {
-        return self.position.borrow().bytes;
+        self.position.borrow().bytes
     }
 
     /// Originally: Bitstream::capacity
     pub fn size(&self) -> u64 {
-        return self.data.len() as u64;
+        self.data.len() as u64
     }
 
     pub fn more_data(&self) -> bool {
-        return self.position_in_bytes() < self.data.len();
+        self.position_in_bytes() < self.data.len()
     }
 
     #[inline]
@@ -116,6 +116,8 @@ impl Bitstream {
         }
     }
 
+    /// Copy bitstream from src to self
+    /// At the end of copy_from, the position of self is updated to the end of the copied data
     pub fn copy_from(&mut self, src: &Bitstream, start_byte: usize, bitstream_size: usize) {
         if self.data.len() < self.bytes() + bitstream_size {
             self.data.resize(self.bytes() + bitstream_size, 0)
@@ -145,7 +147,7 @@ impl Bitstream {
             }
             i += 1;
         }
-        return val;
+        val
     }
 
     fn read_slice(&self, size: usize) -> &[u8] {
@@ -163,7 +165,7 @@ impl Bitstream {
         if leading_zeros == 0 {
             return 0;
         }
-        return (1 << leading_zeros) - 1 + self.read(leading_zeros);
+        (1 << leading_zeros) - 1 + self.read(leading_zeros)
     }
 
     fn read_svlc(&self) -> i32 {
@@ -173,54 +175,6 @@ impl Bitstream {
         } else {
             -1 * (x >> 1) as i32
         }
-    }
-}
-
-pub(crate) struct AtlasHighLevelSyntax {
-    pub video_bitstreams: Vec<VideoBitstream>,
-    pub atlas_sequence_parameter_set: Vec<reader::AtlasSequenceParameterSetRbsp>,
-    pub atlas_frame_parameter_set: Vec<reader::AtlasFrameParameterSetRbsp>,
-    // ref_atlas_frame_list: Vec<Vec<i32>>,
-    // max_num_ref_atlas_frame: usize,
-    // point_local_reconstruction_mode: Vec<PointLocalReconstructionMode>,
-    pub atlas_tile_layer: Vec<reader::AtlasTileLayerRbsp>,
-}
-
-impl AtlasHighLevelSyntax {
-    pub fn new() -> Self {
-        Self {
-            video_bitstreams: Vec::new(),
-            atlas_sequence_parameter_set: Vec::new(),
-            atlas_frame_parameter_set: Vec::new(),
-            atlas_tile_layer: Vec::new(),
-        }
-    }
-
-    pub fn get_num_ref_idx_active(&self, ath: &reader::AtlasTileHeader) -> usize {
-        use reader::TileType;
-
-        let afps = &self.atlas_frame_parameter_set[ath.atlas_frame_parameter_set_id as usize];
-        let num_ref_idx_active = match ath.tile_type {
-            TileType::I => 0,
-            TileType::P | TileType::Skip => {
-                if ath.num_ref_idx_active_override_flag {
-                    ath.num_ref_idx_active_minus_1 + 1
-                } else {
-                    let asps = &self.atlas_sequence_parameter_set
-                        [afps.atlas_sequence_parameter_set_id as usize];
-                    let ref_list = if ath.ref_atlas_frame_list_sps_flag {
-                        &asps.ref_list_struct[ath.ref_atlas_frame_list_idx as usize]
-                    } else {
-                        &ath.ref_list_struct
-                    };
-                    std::cmp::min(
-                        ref_list.num_ref_entries,
-                        afps.num_ref_idx_default_active_minus_1 + 1,
-                    )
-                }
-            }
-        } as usize;
-        num_ref_idx_active
     }
 }
 
