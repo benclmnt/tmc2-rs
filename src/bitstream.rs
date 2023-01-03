@@ -229,11 +229,8 @@ impl VideoBitstream {
             }
 
             end_index = start_index + precision + nalu_size;
-            if end_index >= self.data.len() {
-                break;
-            }
 
-            for i in 0..size_start_code - 1 {
+            for _ in 0..size_start_code - 1 {
                 result.push(0);
             }
             result.push(1);
@@ -254,6 +251,11 @@ impl VideoBitstream {
                 match codec_id {
                     CodecId::H264 => use_long_start_code = true,
                     CodecId::H265 => {
+                        // HEVC
+                        //   Bool forbidden_zero_bit = bs.read(1);           // forbidden_zero_bit
+                        //   nalu.m_nalUnitType = (NalUnitType) bs.read(6);  // nal_unit_type
+                        //   nalu.m_nuhLayerId = bs.read(6);                 // nuh_layer_id
+                        //   nalu.m_temporalId = bs.read(3) - 1;             // nuh_temporal_id_plus1
                         nalu_type = (self.data[start_index + precision + 1] & 126) >> 1;
                         use_long_start_code = new_frame || (nalu_type >= 32 && nalu_type < 41);
                         if nalu_type < 12 {
@@ -261,6 +263,12 @@ impl VideoBitstream {
                         }
                     }
                     CodecId::H266 => {
+                        // VVC
+                        //   nalu.m_forbiddenZeroBit   = bs.read(1);                 // forbidden zero bit
+                        //   nalu.m_nuhReservedZeroBit = bs.read(1);                 // nuh_reserved_zero_bit
+                        //   nalu.m_nuhLayerId         = bs.read(6);                 // nuh_layer_id
+                        //   nalu.m_nalUnitType        = (NalUnitType) bs.read(5);   // nal_unit_type
+                        //   nalu.m_temporalId         = bs.read(3) - 1;             // nuh_temporal_id_plus1
                         nalu_type = (self.data[start_index + precision + 1] & 248) >> 3;
                         use_long_start_code = new_frame || (nalu_type >= 12 && nalu_type < 20);
                         if nalu_type < 12 {
@@ -269,6 +277,10 @@ impl VideoBitstream {
                     }
                 }
                 size_start_code = if use_long_start_code { 4 } else { 3 };
+            }
+
+            if end_index >= self.data.len() {
+                break;
             }
         }
 
