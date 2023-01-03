@@ -11,7 +11,7 @@ use crate::bitstream::{
     },
     VideoBitstream,
 };
-use crate::decoder::Patch;
+use crate::decoder::{Patch, Video};
 use cgmath::Vector3;
 
 pub type Context = RawContext;
@@ -25,10 +25,10 @@ pub struct RawContext {
     pub(crate) atlas_contexts: AtlasContext,
 
     // PCCHighLevelSyntax.h
-    pub(crate) video_bitstream: HashMap<VideoType, VideoBitstream>,
+    // pub(crate) video_bitstream: HashMap<VideoType, VideoBitstream>,
     v3c_unit_headers: HashMap<V3CUnitType, V3CUnitHeader>,
-    vpcc_parameter_sets: Vec<V3CParameterSet>,
-    pub active_vps: u8,
+    vpcc_parameter_sets: Option<V3CParameterSet>,
+    // pub active_vps: u8,
     // occupancy_precision: u8,
     // log2_patch_quantizer_size_x: u8,
     // log2_patch_quantizer_size_y: u8,
@@ -60,10 +60,16 @@ impl RawContext {
         // TODO[stat]: self.bitstream_stat.setVideoBinSize( video_bitstream.video_type, video_bitstream.size() );
     }
 
+    /// Get a video bitstream from the context
+    pub(crate) fn get_video_bitstream(&self, video_type: VideoType) -> Option<&VideoBitstream> {
+        self.atlas_hls.get_video_bitstream(video_type)
+    }
+
     /// Add a new V3CParameterSet to the context.
     #[inline]
     pub(crate) fn add_v3c_parameter_set(&mut self, v3c_parameter_set: V3CParameterSet) {
-        self.vpcc_parameter_sets.push(v3c_parameter_set);
+        assert!(self.vpcc_parameter_sets.is_none());
+        self.vpcc_parameter_sets = Some(v3c_parameter_set);
     }
 
     /// Add a new ASPS to the context.
@@ -116,8 +122,8 @@ impl RawContext {
     }
 
     #[inline]
-    pub(crate) fn get_atlas_tile_layer_list(&self) -> &[AtlasTileLayerRbsp] {
-        &self.atlas_hls.atlas_tile_layer
+    pub(crate) fn atlas_tile_layer_len(&self) -> usize {
+        self.atlas_hls.atlas_tile_layer.len()
     }
 
     #[inline]
@@ -134,7 +140,7 @@ impl RawContext {
     ///
     /// Returns (afoc_msb, afoc_lsb). Note that afoc_val is equivalent to afoc_lsb
     pub(crate) fn derive_afoc_val(&self, atgl_index: usize) -> (u32, u32) {
-        let atgh = &self.get_atlas_tile_layer_list()[atgl_index].header;
+        let atgh = &self.get_atlas_tile_layer(atgl_index).header;
         let afoc_lsb = atgh.atlas_frame_order_count_lsb;
 
         if atgl_index == 0 {
@@ -147,11 +153,13 @@ impl RawContext {
         let max_afoc_lsb = 1u32 << (asps.log2_max_atlas_frame_order_cnt_lsb_minus_4 + 4);
 
         assert!(atgl_index > 0);
-        let prev_afoc_lsb = self.get_atlas_tile_layer_list()[atgl_index - 1]
+        let prev_afoc_lsb = self
+            .get_atlas_tile_layer(atgl_index - 1)
             .header
             .atlas_frame_order_count_lsb;
-        let prev_afoc_msb =
-            self.get_atlas_tile_layer_list()[atgl_index - 1].atlas_frame_order_count_msb;
+        let prev_afoc_msb = self
+            .get_atlas_tile_layer(atgl_index - 1)
+            .atlas_frame_order_count_msb;
 
         let afoc_msb = if afoc_lsb < prev_afoc_lsb && prev_afoc_lsb - afoc_lsb >= max_afoc_lsb / 2 {
             prev_afoc_msb + max_afoc_lsb
@@ -174,7 +182,7 @@ impl RawContext {
 
     #[inline]
     pub fn get_vps(&self) -> Option<&V3CParameterSet> {
-        self.vpcc_parameter_sets.get(self.active_vps as usize)
+        self.vpcc_parameter_sets.as_ref()
     }
 
     #[inline]
@@ -185,13 +193,13 @@ impl RawContext {
 
 #[derive(Default)]
 pub(crate) struct AtlasHighLevelSyntax {
-    pub video_bitstreams: Vec<VideoBitstream>,
+    video_bitstreams: Vec<VideoBitstream>,
     pub atlas_sequence_parameter_set: Vec<AtlasSequenceParameterSetRbsp>,
     pub atlas_frame_parameter_set: Vec<RefCell<AtlasFrameParameterSetRbsp>>,
     // ref_atlas_frame_list: Vec<Vec<i32>>,
     // max_num_ref_atlas_frame: usize,
     // point_local_reconstruction_mode: Vec<PointLocalReconstructionMode>,
-    pub atlas_tile_layer: Vec<AtlasTileLayerRbsp>,
+    atlas_tile_layer: Vec<AtlasTileLayerRbsp>,
 }
 
 impl AtlasHighLevelSyntax {
@@ -221,7 +229,19 @@ impl AtlasHighLevelSyntax {
             }
         }
     }
+
+    #[inline]
+    fn get_video_bitstream(&self, video_type: VideoType) -> Option<&VideoBitstream> {
+        self.video_bitstreams
+            .iter()
+            .rev()
+            .find(|v| v.video_type == video_type)
+    }
 }
+
+pub(crate) type VideoOccupancyMap = Video<u8>;
+pub(crate) type VideoGeometry = Video<u16>;
+pub(crate) type VideoAttribute = Video<u16>;
 
 /// Context for a collection of frames
 #[derive(Default)]
@@ -232,7 +252,7 @@ pub(crate) struct AtlasContext {
     // log2_max_atlas_frame_order_cnt_lsb: usize,
     pub(crate) frame_contexts: Vec<AtlasFrameContext>,
     // frames_in_afps: Vec<(usize, usize)>,
-    // occ_frames: VideoOccupancyMap,
+    // pub(crate) occ_frames: VideoOccupancyMap,
     // occ_bitdepth: Vec<usize>,
     // occ_width: Vec<usize>,
     // occ_height: Vec<usize>,

@@ -1,7 +1,9 @@
 use log::debug;
 use std::cell::RefCell;
+use std::fmt;
 use std::path::Path;
 
+use crate::decoder::CodecId;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 pub mod reader;
@@ -150,6 +152,14 @@ impl Bitstream {
         val
     }
 
+    pub fn peek(&self, bits: u8) -> u32 {
+        let pos = self.position.borrow().clone();
+        let res = self.read(bits);
+        // rewind the cursor
+        *self.position.borrow_mut() = pos;
+        res
+    }
+
     fn read_slice(&self, size: usize) -> &[u8] {
         let bytes = self.bytes();
         self.position.borrow_mut().bytes += size;
@@ -179,8 +189,8 @@ impl Bitstream {
 }
 
 pub(crate) struct VideoBitstream {
-    data: Vec<u8>,
-    video_type: VideoType,
+    pub(crate) data: Vec<u8>,
+    pub(crate) video_type: VideoType,
 }
 
 impl VideoBitstream {
@@ -194,10 +204,80 @@ impl VideoBitstream {
         debug!("VideoType={:?} size={}", &vbs.video_type, &vbs.data.len());
         vbs
     }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Sample stream is used in the final bitstream. However, the decoder only understands the bytestream
+    /// so this fn is used in PCCDecoder before being send to the `VideoDecoder::decode`
+    pub fn sample_stream_to_bytestream(&self, codec_id: CodecId, precision: usize) -> Vec<u8> {
+        // let emulation_prevention_bytes = false;
+        // let change_start_code_size = true;
+        assert_eq!(precision, 4);
+
+        let mut size_start_code = 4;
+        let mut start_index = 0;
+        let mut end_index = 0;
+        let mut new_frame = true;
+        let mut result = Vec::with_capacity(self.data.len());
+
+        loop {
+            let mut nalu_size = 0;
+            for i in 0..precision {
+                nalu_size = (nalu_size << 8) + self.data[start_index + i] as usize;
+            }
+
+            end_index = start_index + precision + nalu_size;
+            if end_index >= self.data.len() {
+                break;
+            }
+
+            for i in 0..size_start_code - 1 {
+                result.push(0);
+            }
+            result.push(1);
+
+            // if emulation_prevention_bytes {
+            //     unimplemented!("emulation_prevention_bytes");
+            // } else {
+            for i in (start_index + precision)..end_index {
+                result.push(self.data[i]);
+            }
+            // }
+
+            start_index = end_index;
+            if start_index + precision < self.data.len() {
+                let mut nalu_type = 0;
+                let mut use_long_start_code = false;
+                new_frame = false;
+                match codec_id {
+                    CodecId::H264 => use_long_start_code = true,
+                    CodecId::H265 => {
+                        nalu_type = (self.data[start_index + precision + 1] & 126) >> 1;
+                        use_long_start_code = new_frame || (nalu_type >= 32 && nalu_type < 41);
+                        if nalu_type < 12 {
+                            new_frame = true;
+                        }
+                    }
+                    CodecId::H266 => {
+                        nalu_type = (self.data[start_index + precision + 1] & 248) >> 3;
+                        use_long_start_code = new_frame || (nalu_type >= 12 && nalu_type < 20);
+                        if nalu_type < 12 {
+                            new_frame = true;
+                        }
+                    }
+                }
+                size_start_code = if use_long_start_code { 4 } else { 3 };
+            }
+        }
+
+        result
+    }
 }
 
 // TODO: set Attribute enum values
-#[derive(Debug, FromPrimitive, IntoPrimitive)]
+#[derive(Debug, PartialEq, FromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub(crate) enum VideoType {
     #[default]
@@ -241,6 +321,14 @@ pub(crate) enum VideoType {
     // NumVideoType,
 }
 
+impl fmt::Display for VideoType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+        // or, alternatively:
+        // fmt::Debug::fmt(self, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +344,15 @@ mod tests {
         assert_eq!(bitstream.read(6), 0b110011);
         bitstream.reset();
         assert_eq!(bitstream.read(8), 0b10101010);
+    }
+
+    #[test]
+    fn test_bitstream_peek() {
+        let bitstream = Bitstream::new(vec![0b10101010]);
+        assert_eq!(bitstream.peek(1), 0b1);
+        assert_eq!(bitstream.peek(1), 0b1);
+        assert_eq!(bitstream.peek(3), 0b101);
+        assert_eq!(bitstream.peek(3), 0b101);
     }
 
     #[test]

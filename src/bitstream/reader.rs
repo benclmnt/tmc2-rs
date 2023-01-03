@@ -24,6 +24,10 @@ struct V3CUnit {
 }
 
 impl V3CUnit {
+    fn peek_type(&self) -> V3CUnitType {
+        V3CUnitType::from(self.bitstream.peek(5) as u8)
+    }
+
     /// Originally PCCBitstreamReader::v3cUnit
     fn decode(&self, syntax: &mut Context) -> V3CUnitType {
         // self.bitstream.reset();
@@ -46,7 +50,8 @@ impl V3CUnit {
 
         if v3c_unit_type != V3CUnitType::V3cParameterSet {
             v3c_unit_header.sequence_parameter_set_id = self.bitstream.read(4) as u8; // u(4)
-            syntax.active_vps = v3c_unit_header.sequence_parameter_set_id;
+
+            // syntax.active_vps = v3c_unit_header.sequence_parameter_set_id;
             v3c_unit_header.atlas_id = self.bitstream.read(6) as u8; // u(6)
             assert!(
                 v3c_unit_header.atlas_id == 0,
@@ -82,7 +87,7 @@ impl V3CUnit {
         v3c_unit_type
     }
 
-    /// Originally PCCBitstreamReader::v3cUnitPayload
+    /// Originally PCCBitstreamReader::v3cUnitPayload + videoSubstream
     fn decode_payload(&self, syntax: &mut Context) {
         match self.unit_type {
             V3CUnitType::V3cParameterSet => {
@@ -193,7 +198,7 @@ pub struct V3CParameterSet {
     frame_width: u16,
     frame_height: u16,
     pub(crate) map_count_minus_1: u8,
-    multiple_map_streams_present_flag: bool,
+    pub(crate) multiple_map_streams_present_flag: bool,
     map_absolute_coding_enable_flag: Vec<bool>,
     map_predictor_index_diff: Vec<bool>,
     pub(crate) auxiliary_video_present_flag: bool,
@@ -417,19 +422,19 @@ impl GeometryInformation {
 }
 
 /// 8.3.4.5 Attribute Information Syntax
-/// IDEA: can be optimized since we only have 1 attribute
+/// TODO: can be optimized since we only have 1 attribute
 #[derive(Debug, Default)]
 pub(crate) struct AttributeInformation {
-    attribute_count: u8,
-    attribute_type_id: Vec<u8>,
-    attribute_codec_id: Vec<u8>,
-    auxiliary_attribute_code_id: Vec<u8>,
-    attribute_map_absolute_coding_persistence_flag: Vec<bool>,
-    attribute_dimension_minus_1: Vec<u8>,
-    attribute_dimension_partitions_minus_1: Vec<u8>,
-    attribute_partition_channels_minus_1: Vec<Vec<u8>>,
-    attribute_2d_bitdepth_minus_1: Vec<u8>,
-    attribute_msb_align_flag: Vec<bool>,
+    pub(crate) attribute_count: u8,
+    pub(crate) attribute_type_id: Vec<u8>,
+    pub(crate) attribute_codec_id: Vec<u8>,
+    pub(crate) auxiliary_attribute_codec_id: Vec<u8>,
+    pub(crate) attribute_map_absolute_coding_persistence_flag: Vec<bool>,
+    pub(crate) attribute_dimension_minus_1: Vec<u8>,
+    pub(crate) attribute_dimension_partitions_minus_1: Vec<u8>,
+    pub(crate) attribute_partition_channels_minus_1: Vec<Vec<u8>>,
+    pub(crate) attribute_2d_bitdepth_minus_1: Vec<u8>,
+    pub(crate) attribute_msb_align_flag: Vec<bool>,
 }
 
 impl AttributeInformation {
@@ -438,7 +443,7 @@ impl AttributeInformation {
             attribute_count: attribute_count as u8,
             attribute_type_id: vec![0; attribute_count],
             attribute_codec_id: vec![0; attribute_count],
-            auxiliary_attribute_code_id: vec![0; attribute_count],
+            auxiliary_attribute_codec_id: vec![0; attribute_count],
             attribute_map_absolute_coding_persistence_flag: vec![false; attribute_count],
             attribute_dimension_minus_1: vec![0; attribute_count],
             attribute_dimension_partitions_minus_1: vec![0; attribute_count],
@@ -459,7 +464,7 @@ impl AttributeInformation {
             ai.attribute_type_id[i] = bitstream.read(4) as u8; // u(4)
             ai.attribute_codec_id[i] = bitstream.read(8) as u8; // u(8)
             if is_auxiliary_video_present {
-                ai.auxiliary_attribute_code_id[i] = bitstream.read(8) as u8 // u(8)
+                ai.auxiliary_attribute_codec_id[i] = bitstream.read(8) as u8 // u(8)
             }
             ai.attribute_map_absolute_coding_persistence_flag[i] = true;
             if map_count_minus_1 > 0 {
@@ -510,7 +515,7 @@ pub(crate) struct ProfileTierLevel {
     tier_flag: bool,
 
     /// AVC Progressive High, HEVC Main 10, HEVC444
-    profile_codec_group_idc: u8,
+    pub(crate) profile_codec_group_idc: u8,
     /// Indicates the use of V-PCC specific tools
     /// Basic (0) or Extended (1)
     profile_toolset_idc: u8,
@@ -680,30 +685,24 @@ impl SampleStreamV3CUnit {
 
         while self.get_v3c_unit_count() > 0 {
             let unit = &mut self.front();
-            let v3c_unit_type = unit.decode(syntax);
-            match v3c_unit_type {
-                V3CUnitType::V3cParameterSet => {
-                    num_vps += 1;
-                    if num_vps > 1 {
-                        // remove the bits counted for the last VPS
-                        // let v3c_unit_size = unit.bitstream.size();
-                        // TODO[stat]: let stat_size = bitstream_stat.overwrite_v3c_unit_size
+            let v3c_unit_type = unit.peek_type();
+            if v3c_unit_type == V3CUnitType::V3cParameterSet {
+                num_vps += 1;
+                if num_vps > 1 {
+                    // remove the bits counted for the last VPS
+                    // let v3c_unit_size = unit.bitstream.size();
+                    // TODO[stat]: let stat_size = bitstream_stat.overwrite_v3c_unit_size
 
-                        // Each V3C Unit only contains 1 VPS. In the reference implementation, we trackback.
-                        // However, this causes `unit.decode(syntax)` line above to be evaluated twice.
-                        // DIFF: Instead, we could get away with having the VPS already appended to `syntax.vpcc_parameter_sets`
-                        // while still having `syntax.active_vps` set to the old value.
-                        // Refer to v3cUnit::decode_header where we set the active_vps only for non-vps parameter sets.
-                        self.pop_front();
+                    // Each V3C Unit only contains 1 VPS. In the reference implementation, we trackback.
+                    // However, this causes `unit.decode(syntax)` line above to be evaluated twice.
+                    // DIFF: Instead, we could peek first to determine if it is a VPS
 
-                        // Note: the usage of endOfGop is changed to break
-                        break;
-                    } else {
-                        self.pop_front();
-                    }
+                    // Note: the usage of endOfGop is changed to break
+                    break;
                 }
-                _ => self.pop_front(),
             }
+            unit.decode(syntax);
+            self.pop_front();
         }
     }
 
@@ -735,7 +734,7 @@ impl SampleStreamNalUnit {
             // Originally: PCCBitstreamReader::sampleStreamNalUnit
             let nalu_size = bitstream.read(8 * (ssnu.size_precision_bytes_minus_1 + 1)) as usize;
             let nalu = NalUnit::from_bitstream(syntax, bitstream, nalu_size);
-            debug!(
+            trace!(
                 "[nalu] size: {}, precision: {}, type: {:?}, bitsWritten: {}",
                 nalu.size,
                 ssnu.size_precision_bytes_minus_1 + 1,
@@ -767,6 +766,7 @@ struct NalUnit {
 
 impl NalUnit {
     pub fn from_bitstream(syntax: &mut Context, bitstream: &Bitstream, nalu_size: usize) -> Self {
+        // The part of PCCBitstreamReader::sampleStreamNalUnit before the call to nalUnitHeader is moved out to the caller
         // PCCBitstreamReader::nalUnitHeader
         bitstream.read(1);
         let nalu = Self {
@@ -774,8 +774,10 @@ impl NalUnit {
             unit_type: NalUnitType::from(bitstream.read(6) as u8), // u(6)
             layer_id: bitstream.read(6) as u8,                     // u(6)
             temporal_id_plus_1: bitstream.read(3) as u8,           // u(3)
-            data: vec![0; nalu_size - 2],
+            data: Vec::with_capacity(nalu_size - 2),
         };
+
+        // continue to PCCBitstreamReader::sampleStreamNalUnit
         match nalu.unit_type {
             NalUnitType::Asps => {
                 syntax.add_atlas_sequence_parameter_set(

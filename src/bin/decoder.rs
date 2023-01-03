@@ -1,4 +1,5 @@
 use clap::Parser;
+use log::debug;
 use std::path::PathBuf;
 use tmc2rs::bitstream;
 use tmc2rs::bitstream::Bitstream;
@@ -13,11 +14,11 @@ struct Args {
     config: Option<String>,
 
     /// Output(encoder) / Input(decoder) compressed bitstream
-    #[clap(long)]
+    #[clap(short = 'i', long)]
     compressed_stream_path: PathBuf,
 
     /// Output decoded pointcloud. Multi-frame sequences maybe represented by %04i
-    #[clap(long)]
+    #[clap(short = 'o', long)]
     reconstructed_data_path: Option<PathBuf>,
 
     /// First frame number in sequence to encode/decode
@@ -32,8 +33,8 @@ struct Args {
     keep_intermediate_files: bool,
 
     /// Path to the video decoder used to decompress occupancy, geometry, attribute maps
-    #[clap(long)]
-    video_decoder_path: PathBuf,
+    #[clap(short = 'd', long)]
+    video_decoder_path: Option<PathBuf>,
     // video_decoder_occupancy_path: PathBuf,
     // video_decoder_geometry_path: PathBuf,
     // video_decoder_attribute_path: PathBuf,
@@ -83,8 +84,7 @@ fn decompress_video(args: Args) {
     let (mut ssvu, header_size) =
         bitstream::reader::SampleStreamV3CUnit::from_bitstream(&bitstream);
     // TODO[stat] bitstream_stat.incr_header(header_size);
-    // DIFF: This is different (I think) from the reference implementation.
-    let mut context = Context::default();
+
     let decoder_params = decoder::Params::new(args.compressed_stream_path, args.video_decoder_path)
         .with_start_frame(args.start_frame);
     let decoder = decoder::Decoder::new(decoder_params);
@@ -94,6 +94,8 @@ fn decompress_video(args: Args) {
     // In the reference implementation, after running `ssvu.decode(...)`, the decoder is run, which kinda implies that there is some potential for parallelism here.
     // Check how `context.active_vps` is updated.
     while ssvu.get_v3c_unit_count() > 0 {
+        // DIFF: This is different (I think) from the reference implementation.
+        let mut context = Context::default();
         // TODO[stat] context.set_bitstream_stat(&bitstream_stat);
         ssvu.decode(&mut context);
         // TODO[checks]: context.check_profile()

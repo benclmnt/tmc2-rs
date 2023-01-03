@@ -1,12 +1,18 @@
 use crate::{
-    bitstream::reader::{PatchDataUnit, PatchModeITile, PatchModePTile, TileType},
-    common::context::{AtlasFrameContext, TileContext},
+    bitstream::{
+        reader::{PatchDataUnit, PatchModeITile, PatchModePTile, TileType},
+        VideoBitstream, VideoType,
+    },
+    common::context::{
+        AtlasFrameContext, TileContext, VideoAttribute, VideoGeometry, VideoOccupancyMap,
+    },
 };
 
 use super::common::context::Context;
 use cgmath::{Matrix3, Vector3};
 use log::{debug, trace};
 use num_enum::FromPrimitive;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
 type Point3D = Vector3<i16>;
@@ -54,7 +60,14 @@ pub struct Params {
     pub start_frame: usize,
     pub compressed_stream_path: PathBuf,
     pub reconstructed_data_path: PathBuf,
-    pub video_decoder_path: PathBuf,
+    pub video_decoder_path: Option<PathBuf>,
+    // (2Jan23): always true
+    // pub is_bytestream_video_coder: bool,
+    pub keep_intermediate_files: bool,
+
+    pub patch_color_subsampling: bool,
+    pub color_space_conversion_path: Option<PathBuf>,
+    pub inverse_color_space_conversion_config: Option<PathBuf>,
 
     // reconstruction options
     // NOTE (9Dec22): all set to default (false) for now since we are only supporting Rec0
@@ -70,7 +83,7 @@ pub struct Params {
 }
 
 impl Params {
-    pub fn new(compressed_stream: PathBuf, video_decoder_path: PathBuf) -> Self {
+    pub fn new(compressed_stream: PathBuf, video_decoder_path: Option<PathBuf>) -> Self {
         Self {
             compressed_stream_path: compressed_stream.clone(),
             reconstructed_data_path: PathBuf::from(&format!(
@@ -114,15 +127,20 @@ impl Decoder {
         let ai = &sps.attribute_information;
         let oi = &sps.occupancy_information;
         let gi = &sps.geometry_information;
-        let asps = context.get_atlas_frame_parameter_set(0);
-        let frame_count = &context.atlas_contexts;
+        let asps = context.get_atlas_sequence_parameter_set(0);
+        let frame_count = context.atlas_contexts.frame_contexts.len();
         let ptl = &sps.profile_tier_level;
         let map_count = sps.map_count_minus_1 + 1;
         let geometry_bitdepth = gi.geometry_2d_bitdepth_minus_1 + 1;
 
+        let has_aux_data = asps.raw_patch_enabled_flag
+            && asps.auxiliary_video_enabled_flag
+            && sps.auxiliary_video_present_flag;
+        assert!(!has_aux_data);
+
+        // skip set_consitant_four_cc_code(context, 0);
         let occupancy_codec_id = CodecId::from(oi.occupancy_codec_id);
         let geometry_codec_id = CodecId::from(gi.geometry_codec_id);
-
         let path_prefix = format!(
             "{:?}_dec_GOF{}",
             &self
@@ -133,6 +151,130 @@ impl Decoder {
             sps.v3c_parameter_set_id,
         );
 
+        debug!(
+            "CodecCodecId: profile_codec_group_idc={}, occupancy={:?}, geo={:?}",
+            ptl.profile_codec_group_idc, occupancy_codec_id, geometry_codec_id
+        );
+
+        let mut video_decoder = LibavcodecDecoder {};
+
+        let occ_bitstream = context
+            .get_video_bitstream(VideoType::Occupancy)
+            .expect("No occupancy bitstream");
+        debug!(
+            "\n*******Video Decoding: Occupancy ******** size: {}",
+            occ_bitstream.len()
+        );
+        let occ_video: VideoOccupancyMap = video_decoder
+            .decompress(
+                occ_bitstream,
+                VideoDecoderOptions {
+                    codec_id: occupancy_codec_id,
+                    bytestream_video_coder: true,
+                    output_bitdepth: 8,
+                    keep_intermediate_files: self.params.keep_intermediate_files,
+                    patch_color_subsampling: false,
+                    inverse_color_space_config: None,
+                    color_space_conversion_path: None,
+                },
+            )
+            .unwrap();
+        // context.getVideoOccupancyMap() = occ_video
+        assert_eq!(oi.occupancy_2d_bitdepth_minus_1, 7);
+        assert!(!oi.occupancy_msb_align_flag);
+        // context.getVideoOccupancyMap().convertBitdepth( 8, oi.getOccupancy2DBitdepthMinus1() + 1,
+        //                                           oi.getOccupancyMSBAlignFlag() );
+
+        if sps.multiple_map_streams_present_flag {
+            unimplemented!("multiple map streams not implemented");
+        } else {
+            trace!("Geometry\nMapIdx = 0, AuxiliaryVideoFlag = 0\n");
+            let geo_bitstream = context
+                .get_video_bitstream(VideoType::Geometry)
+                .expect("No geometry bitstream");
+            debug!(
+                "\n*******Video Decoding: Geometry ******** size: {}",
+                geo_bitstream.len()
+            );
+            let geo_video: VideoGeometry = video_decoder
+                .decompress(
+                    geo_bitstream,
+                    VideoDecoderOptions {
+                        codec_id: geometry_codec_id,
+                        bytestream_video_coder: true,
+                        output_bitdepth: geometry_bitdepth,
+                        keep_intermediate_files: self.params.keep_intermediate_files,
+                        patch_color_subsampling: false,
+                        inverse_color_space_config: None,
+                        color_space_conversion_path: None,
+                    },
+                )
+                .unwrap();
+            // context.getVideoGeometryMultiple(0) = geo_video
+            assert!(!gi.geometry_msb_align_flag);
+            // context.getVideoGeometryMultiple(0).convertBitdepth( geometry_bitdepth, gi.getGeometry2DBitdepthMinus1() + 1, gi.geometry_msb_align_flag );
+        }
+
+        if has_aux_data {
+            unimplemented!("Auxiliary geometry video not implemented")
+        }
+
+        // We only have 1 attribute actually
+        assert_eq!(ai.attribute_count, 1);
+        for i in 0..ai.attribute_count {
+            let attribute_bitdepth = ai.attribute_2d_bitdepth_minus_1[i as usize] + 1;
+            // unused
+            let attribute_type_id = ai.attribute_type_id[i as usize];
+            let attribute_partition_dimension =
+                ai.attribute_dimension_partitions_minus_1[i as usize] + 1;
+            let attribute_codec_id = CodecId::from(ai.attribute_codec_id[i as usize]);
+            assert_eq!(attribute_partition_dimension, 1);
+
+            debug!("CodecId attributeCodecId = {:?}", attribute_codec_id);
+            for j in 0..attribute_partition_dimension {
+                if sps.multiple_map_streams_present_flag {
+                    unimplemented!("multiple map streams not implemented");
+                } else {
+                    trace!(
+                        "Attribute\nAttrIdx = {}, AttrPartIdx = {}, AttributeTypeId = {}, MapIdx = 0, AuxiliaryVideoFlag = 0\n",
+                        i,
+                        j,
+                        attribute_type_id,
+                    );
+                    let attr_bitstream = context
+                        .get_video_bitstream(VideoType::Attribute)
+                        .expect("No attribute bitstream");
+                    debug!(
+                        "\n*******Video Decoding: Attribute ******** size: {}",
+                        attr_bitstream.len()
+                    );
+                    let attr_video: VideoAttribute = video_decoder
+                        .decompress(
+                            attr_bitstream,
+                            VideoDecoderOptions {
+                                codec_id: attribute_codec_id,
+                                bytestream_video_coder: true,
+                                output_bitdepth: attribute_bitdepth,
+                                keep_intermediate_files: self.params.keep_intermediate_files,
+                                patch_color_subsampling: false,
+                                inverse_color_space_config: None,
+                                color_space_conversion_path: None,
+                            },
+                        )
+                        .unwrap();
+                    // context.getVideoAttributeMultiple(0) = attr_video
+
+                    if has_aux_data {
+                        unimplemented!("Auxiliary attribute video not implemented")
+                    }
+                }
+            }
+        }
+
+        // Reconstruction
+        // TODO: recreating the prediction list per attribute (either the attribtue is coded absolute, or follows the geometry)
+
+        debug!("generate point cloud of {} frames", frame_count);
         gof
     }
 
@@ -141,7 +283,7 @@ impl Decoder {
         let mut frame_count = 0;
         Self::set_tile_partition_size_afti(context);
 
-        for i in 0..context.get_atlas_tile_layer_list().len() {
+        for i in 0..context.atlas_tile_layer_len() {
             let (afoc_msb, afoc_val) = context.derive_afoc_val(i);
             let atgl = context.get_mut_atlas_tile_layer(i);
             atgl.atlas_frame_order_count_msb = afoc_msb;
@@ -150,10 +292,10 @@ impl Decoder {
             frame_count = std::cmp::max(frame_count, afoc_val + 1);
         }
 
-        // context.resize(frame_count);
+        // context.atlas_contexts.resize(frame_count);
         // set_point_local_reconstruction(context);
 
-        for atgl_idx in 0..context.get_atlas_tile_layer_list().len() {
+        for atgl_idx in 0..context.atlas_tile_layer_len() {
             // (15Dec22) hmm this looks like the if clause always evaluates to true.
             // In what condition will the afoc_val be the same for 2 consecutive atlas tile layer?
             let mut afc = if atgl_idx == 0
@@ -169,6 +311,7 @@ impl Decoder {
                 let afps_id = atgl.header.atlas_frame_parameter_set_id;
                 Self::set_tile_size_and_location(context, frame_index as usize, afps_id as usize)
             } else {
+                unreachable!("Looks like the if-clause will always evaluate to true");
                 AtlasFrameContext::default()
             };
 
@@ -192,9 +335,12 @@ impl Decoder {
                 ath.id
             };
             assert_eq!(tile_index, 0);
-            debug!(
+            trace!(
                 "create_patch_frame frame = {}, tiles = {}, atlas_index = {}, atgl_index = {}",
-                frame_index, tile_index, 0, atgl_idx
+                frame_index,
+                tile_index,
+                0,
+                atgl_idx
             );
             afc.tile_frame_context = TileContext {
                 frame_index,
@@ -557,12 +703,207 @@ impl Patch {
     }
 }
 
-enum CodecId {
-    Hm_App = 1,
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) enum CodecId {
+    H264,
+    #[default]
+    H265,
+    H266,
 }
 
 impl CodecId {
     pub fn from(_codec_id: u8) -> CodecId {
-        CodecId::Hm_App
+        assert_eq!(_codec_id, 1);
+        CodecId::H265
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Video<T>
+where
+    T: Copy + Default,
+{
+    pub(crate) frames: Vec<Image<T>>,
+}
+
+impl<T> Video<T>
+where
+    T: Copy + Default,
+{
+    #[inline]
+    fn width(&self) -> u32 {
+        if self.frames.is_empty() {
+            0
+        } else {
+            self.frames[0].width
+        }
+    }
+
+    #[inline]
+    fn height(&self) -> u32 {
+        if self.frames.is_empty() {
+            0
+        } else {
+            self.frames[0].height
+        }
+    }
+
+    #[inline]
+    fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    #[inline]
+    fn color_format(&self) -> ColorFormat {
+        if self.frames.is_empty() {
+            ColorFormat::Unknown
+        } else {
+            self.frames[0].format
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Image<T> {
+    // can move this field to Video<T>?
+    width: u32,
+    height: u32,
+    channels: [Vec<u8>; 3],
+    format: ColorFormat,
+    _phantom: PhantomData<T>,
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) enum ColorFormat {
+    Unknown,
+    Rgb444,
+    Yuv444,
+    #[default]
+    Yuv420,
+}
+
+#[derive(Default)]
+struct VideoDecoderOptions {
+    codec_id: CodecId,
+    bytestream_video_coder: bool,
+    output_bitdepth: u8,
+    keep_intermediate_files: bool,
+    patch_color_subsampling: bool,
+    inverse_color_space_config: Option<PathBuf>,
+    color_space_conversion_path: Option<PathBuf>,
+    // upsampling_filter: usize,
+}
+
+trait VideoDecoder {
+    /// Does the heavylifting of calling the external video decoder (e.g. ffmpeg/HM/JM) and returns the decoded video.
+    fn decode<T>(&mut self, data: &[u8], codec_id: CodecId) -> Result<Video<T>, ()>
+    where
+        T: Copy + Default;
+
+    fn decompress<T>(
+        &mut self,
+        bitstream: &VideoBitstream,
+        opts: VideoDecoderOptions,
+    ) -> Result<Video<T>, ()>
+    where
+        T: Copy + Default,
+    {
+        // TODO: construct the filename for the decoded binstream
+
+        let data = if opts.bytestream_video_coder {
+            bitstream.sample_stream_to_bytestream(opts.codec_id, 4)
+        } else {
+            // TODO: optimize this expensive clone.
+            bitstream.data.clone()
+        };
+
+        let video = self.decode(&data, opts.codec_id)?;
+        // skipping some MD5 computation
+        debug!(
+            "decoded video = {}x{} ({} frames) bitdepth={} color={:?}",
+            video.width(),
+            video.height(),
+            video.frame_count(),
+            opts.output_bitdepth,
+            video.color_format()
+        );
+
+        // TODO(21Dec22): put human-distinguishable names for the files
+        if opts.keep_intermediate_files {}
+
+        // TODO(21Dec22): color conversion to yuv444
+
+        // if opts.color_space_conversion_path.is_some() {
+        //     unimplemented!()
+        // } else {
+        //     unimplemented!()
+        // }
+
+        // if opts.inverse_color_space_config.is_none() || video.is444() {
+        // }
+        Ok(video)
+    }
+}
+
+struct LibavcodecDecoder {}
+
+impl VideoDecoder for LibavcodecDecoder {
+    fn decode<T>(&mut self, data: &[u8], codec_id: CodecId) -> Result<Video<T>, ()>
+    where
+        T: Copy + Default,
+    {
+        extern crate ffmpeg_next as ffmpeg;
+        use ffmpeg::{codec, decoder, format, frame, Packet};
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut tmpfile = NamedTempFile::new().unwrap();
+        // TODO: use a buffer instead of writing to a tmpfile
+        // Currently we write to disk because I can't figure out how to use ffmpeg API with a buffer
+        // The tmpfile is not significant. It will be deleted when it goes out of scope
+        tmpfile.write_all(data).unwrap();
+        let mut ictx = format::input(&tmpfile.path()).unwrap();
+
+        // transform to ffmpeg's codec id
+        let codec = match codec_id {
+            _ => codec::Id::HEVC,
+        };
+
+        let mut decoder = decoder::new()
+            .open_as(decoder::find(codec))
+            .unwrap()
+            .video()
+            .unwrap();
+
+        let mut video = Video::<T>::default();
+
+        let mut frame_index = 0;
+        let mut process_nal_unit = |packet: &Packet| {
+            decoder.send_packet(packet).unwrap();
+            let mut frame = frame::Video::empty();
+            while decoder.receive_frame(&mut frame).is_ok() {
+                let image = Image::<T> {
+                    width: frame.width(),
+                    height: frame.height(),
+                    channels: [
+                        frame.data(0).to_owned(),
+                        frame.data(1).to_owned(),
+                        frame.data(2).to_owned(),
+                    ],
+                    ..Default::default()
+                };
+
+                video.frames.push(image);
+                frame_index += 1;
+            }
+        };
+
+        for (_stream, packet) in ictx.packets() {
+            // debug!("packet {}", _stream.index());
+            process_nal_unit(&packet);
+        }
+
+        tmpfile.close().unwrap();
+        Ok(video)
     }
 }
