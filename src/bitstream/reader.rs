@@ -5,6 +5,7 @@ use super::{Bitstream, VideoBitstream};
 use log::{debug, info, trace};
 use num_enum::FromPrimitive;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 #[derive(Default)]
 struct ReadableAuxData<'a> {
@@ -193,9 +194,9 @@ pub struct V3CParameterSet {
     /// There is a comment in the original code (PCCEncoderParameters.cpp) saying V3C only have a single atlas
     ///
     /// DIFF: Making use of the fact above, we set all the following fields to its non-Vec equivalent
-    pub atlas_count_minus_1: u8,
+    pub(crate) atlas_count_minus_1: u8,
     atlas_id: u8, // originally Vec<u16>
-    frame_width: u16,
+    pub(crate) frame_width: u16,
     frame_height: u16,
     pub(crate) map_count_minus_1: u8,
     pub(crate) multiple_map_streams_present_flag: bool,
@@ -730,11 +731,12 @@ impl SampleStreamNalUnit {
             units: VecDeque::new(),
             size_precision_bytes_minus_1: SampleStreamNalUnit::read_header(bitstream),
         };
+        let mut prefix_sei: Rc<Option<SeiRbsp>> = Rc::new(None);
         while bitstream.more_data() {
             // Originally: PCCBitstreamReader::sampleStreamNalUnit
             let nalu_size = bitstream.read(8 * (ssnu.size_precision_bytes_minus_1 + 1)) as usize;
-            let nalu = NalUnit::from_bitstream(syntax, bitstream, nalu_size);
-            trace!(
+            let nalu = NalUnit::from_bitstream(syntax, bitstream, nalu_size, &mut prefix_sei);
+            debug!(
                 "[nalu] size: {}, precision: {}, type: {:?}, bitsWritten: {}",
                 nalu.size,
                 ssnu.size_precision_bytes_minus_1 + 1,
@@ -761,20 +763,26 @@ struct NalUnit {
     layer_id: u8,
     temporal_id_plus_1: u8,
     size: usize,
-    data: Vec<u8>,
+    // data: Vec<u8>,
 }
 
 impl NalUnit {
-    pub fn from_bitstream(syntax: &mut Context, bitstream: &Bitstream, nalu_size: usize) -> Self {
-        // The part of PCCBitstreamReader::sampleStreamNalUnit before the call to nalUnitHeader is moved out to the caller
-        // PCCBitstreamReader::nalUnitHeader
+    pub fn from_bitstream(
+        syntax: &mut Context,
+        bitstream: &Bitstream,
+        nalu_size: usize,
+        prefix_sei: &mut Rc<Option<SeiRbsp>>,
+    ) -> Self {
+        // The part of PCCBitstreamReader::sampleStreamNalUnit before the call to nalUnitHeader is moved out to the caller.
+
+        // originally PCCBitstreamReader::nalUnitHeader
         bitstream.read(1);
         let nalu = Self {
             size: nalu_size,
             unit_type: NalUnitType::from(bitstream.read(6) as u8), // u(6)
             layer_id: bitstream.read(6) as u8,                     // u(6)
             temporal_id_plus_1: bitstream.read(3) as u8,           // u(3)
-            data: Vec::with_capacity(nalu_size - 2),
+                                                                   // data: Vec::with_capacity(nalu_size - 2),
         };
 
         // continue to PCCBitstreamReader::sampleStreamNalUnit
@@ -802,17 +810,13 @@ impl NalUnit {
             | NalUnitType::SkipN
             | NalUnitType::SkipR
             | NalUnitType::IdrNLp => {
-                syntax.add_atlas_tile_layer(AtlasTileLayerRbsp::from_bitstream(
-                    syntax,
-                    bitstream,
-                    nalu.unit_type,
-                ));
-                // FIXME: include SEI?
-                // syntax.atlas_tile_layer.last().sei.sei_prefix = prefix_sei.sei_prefix;
-                // prefix_sei.sei_prefix.clear();
+                let mut atl = AtlasTileLayerRbsp::from_bitstream(syntax, bitstream, nalu.unit_type);
+                atl.sei = prefix_sei.clone();
+                syntax.add_atlas_tile_layer(atl);
             }
             NalUnitType::PrefixESEI | NalUnitType::PrefixNSEI => {
-                SeiRbsp::from_bitstream(bitstream, nalu.unit_type);
+                *Rc::get_mut(prefix_sei).unwrap() =
+                    Some(SeiRbsp::from_bitstream(bitstream, nalu.unit_type));
             }
             NalUnitType::SuffixESEI | NalUnitType::SuffixNSEI => {
                 unimplemented!("suffixSEI not implemented")
@@ -826,7 +830,7 @@ impl NalUnit {
 /// ACL (Atlas Coding Layer):
 #[derive(Debug, PartialEq, FromPrimitive, Clone, Copy)]
 #[repr(u8)]
-enum NalUnitType {
+pub(crate) enum NalUnitType {
     ///  0-1: Coded tile of a non-TSA, non-STSA trailing atlas frame, ACL
     #[default]
     TrailN,
@@ -933,6 +937,16 @@ enum NalUnitType {
 
     /// 47: Atlas adaptation parameter set, non-ACL
     Aaps,
+}
+
+impl NalUnitType {
+    fn is_prefix_sei(&self) -> bool {
+        matches!(self, NalUnitType::PrefixNSEI | NalUnitType::PrefixESEI)
+    }
+
+    fn is_suffix_sei(&self) -> bool {
+        matches!(self, NalUnitType::SuffixNSEI | NalUnitType::SuffixESEI)
+    }
 }
 
 /// Rbsp: Raw bit payload
@@ -1324,14 +1338,16 @@ impl AtlasFrameTileInformation {
 }
 
 /// 8.3.6.4 Supplemental Enhancement Information (SEI) RBSP
-struct SeiRbsp {
+/// Originally: PCCSEI
+#[derive(Default)]
+pub(crate) struct SeiRbsp {
     sei_prefix: Vec<Box<dyn SEI>>,
     sei_suffix: Vec<Box<dyn SEI>>,
 }
 
-#[derive(FromPrimitive)]
+#[derive(FromPrimitive, PartialEq, Clone, Copy, Debug)]
 #[repr(u8)]
-enum SeiPayloadType {
+pub(crate) enum SeiPayloadType {
     #[default]
     BufferingPeriod = 0,
     AtlasFrameTiming,
@@ -1411,11 +1427,29 @@ impl SeiRbsp {
         bitstream.read(8);
         sei_rbsp
     }
+
+    pub(crate) fn is_sei_present(
+        &self,
+        nal_unit_type: NalUnitType,
+        payload_type: SeiPayloadType,
+    ) -> bool {
+        if !nal_unit_type.is_prefix_sei() || !nal_unit_type.is_suffix_sei() {
+            return false;
+        }
+        let sei = if nal_unit_type.is_prefix_sei() {
+            &self.sei_prefix
+        } else {
+            &self.sei_suffix
+        };
+        sei.iter().any(|sei| sei.get_payload_type() == payload_type)
+    }
 }
 
 /// Annex E: Supplemental Enhancement Information
 /// F.2.1. General SEI message syntax  <=> 7.3.8 Supplemental enhancement Information message
-trait SEI {}
+trait SEI {
+    fn get_payload_type(&self) -> SeiPayloadType;
+}
 
 /// H.20.2.19 Geometry smoothing SEI message syntax
 #[derive(Default, Clone)]
@@ -1470,7 +1504,11 @@ impl SeiGeometrySmoothing {
     }
 }
 
-impl SEI for SeiGeometrySmoothing {}
+impl SEI for SeiGeometrySmoothing {
+    fn get_payload_type(&self) -> SeiPayloadType {
+        SeiPayloadType::GeometrySmoothing
+    }
+}
 
 /// 8.3.6.9  Atlas tile group layer (ATGL) Rbsp syntax
 ///
@@ -1484,10 +1522,10 @@ pub(crate) struct AtlasTileLayerRbsp {
     /// index in AtlasTileLayer
     // pub tile_order: usize,
     /// Frame Index (only used for encoding)
-    enc_frame_index: usize,
+    pub(crate) enc_frame_index: usize,
     /// Tile Index (only used for encoding)
-    enc_tile_index: usize,
-    // sei: SeiRbsp,
+    pub(crate) enc_tile_index: usize,
+    pub(crate) sei: Rc<Option<SeiRbsp>>,
 }
 
 impl AtlasTileLayerRbsp {
@@ -1502,6 +1540,7 @@ impl AtlasTileLayerRbsp {
             enc_tile_index: usize::MAX,
             atlas_frame_order_count_msb: 0,
             atlas_frame_order_count_val: 0,
+            sei: Rc::new(None),
             // FIXME: do we need to set tile order?
             // tile_order: 0,
         }
