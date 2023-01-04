@@ -1,5 +1,4 @@
 use clap::Parser;
-use log::debug;
 use std::path::PathBuf;
 use tmc2rs::bitstream;
 use tmc2rs::bitstream::Bitstream;

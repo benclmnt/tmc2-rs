@@ -22,13 +22,14 @@ pub struct RawContext {
     // pub model_origin: Vector3<f64>,
     // pub model_scale: f64,
     // pub atlas_index: u8,
-    pub(crate) atlas_contexts: AtlasContext,
+    // pub(crate) atlas_contexts: AtlasContext,
 
     // PCCHighLevelSyntax.h
     // pub(crate) video_bitstream: HashMap<VideoType, VideoBitstream>,
     v3c_unit_headers: HashMap<V3CUnitType, V3CUnitHeader>,
     vpcc_parameter_sets: Option<V3CParameterSet>,
     // pub active_vps: u8,
+
     // occupancy_precision: u8,
     // log2_patch_quantizer_size_x: u8,
     // log2_patch_quantizer_size_y: u8,
@@ -136,7 +137,7 @@ impl RawContext {
         &mut self.atlas_hls.atlas_tile_layer[layer_id]
     }
 
-    /// 8.4.3.1 Derives Atlas Frame Order Count value.
+    /// 8.4.3.1 Derives Atlas Frame Order Count (AFOC) value.
     ///
     /// Returns (afoc_msb, afoc_lsb). Note that afoc_val is equivalent to afoc_lsb
     pub(crate) fn derive_afoc_val(&self, atgl_index: usize) -> (u32, u32) {
@@ -189,17 +190,45 @@ impl RawContext {
     pub(crate) fn get_num_ref_idx_active(&self, ath: &reader::AtlasTileHeader) -> usize {
         self.atlas_hls.get_num_ref_idx_active(ath)
     }
+
+    pub(crate) fn is_sei_present(
+        &self,
+        nal_unit_type: reader::NalUnitType,
+        payload_type: reader::SeiPayloadType,
+        atgl_index: usize,
+    ) -> bool {
+        let atgl = self.get_atlas_tile_layer(atgl_index);
+        if (*atgl.sei)
+            .as_ref()
+            .map(|sei| sei.is_sei_present(nal_unit_type, payload_type))
+            .unwrap_or_default()
+        {
+            return true;
+        }
+
+        for i in atgl_index - 1..=0 {
+            let atgl = self.get_atlas_tile_layer(i);
+            if (*atgl.sei)
+                .as_ref()
+                .map(|sei| sei.is_sei_present(nal_unit_type, payload_type))
+                .unwrap_or_default()
+            {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct AtlasHighLevelSyntax {
     video_bitstreams: Vec<VideoBitstream>,
-    pub atlas_sequence_parameter_set: Vec<AtlasSequenceParameterSetRbsp>,
-    pub atlas_frame_parameter_set: Vec<RefCell<AtlasFrameParameterSetRbsp>>,
+    pub(crate) atlas_sequence_parameter_set: Vec<AtlasSequenceParameterSetRbsp>,
+    pub(crate) atlas_frame_parameter_set: Vec<RefCell<AtlasFrameParameterSetRbsp>>,
     // ref_atlas_frame_list: Vec<Vec<i32>>,
     // max_num_ref_atlas_frame: usize,
     // point_local_reconstruction_mode: Vec<PointLocalReconstructionMode>,
-    atlas_tile_layer: Vec<AtlasTileLayerRbsp>,
+    pub(crate) atlas_tile_layer: Vec<AtlasTileLayerRbsp>,
 }
 
 impl AtlasHighLevelSyntax {
@@ -212,7 +241,7 @@ impl AtlasHighLevelSyntax {
             TileType::I => 0,
             TileType::P | TileType::Skip => {
                 if ath.num_ref_idx_active_override_flag {
-                    ath.num_ref_idx_active_minus_1 as usize + 1
+                    ath.num_ref_idx_active_minus1 as usize + 1
                 } else {
                     let asps = &self.atlas_sequence_parameter_set
                         [afps.atlas_sequence_parameter_set_id as usize];
@@ -223,7 +252,7 @@ impl AtlasHighLevelSyntax {
                     };
                     std::cmp::min(
                         ref_list.num_ref_entries,
-                        afps.num_ref_idx_default_active_minus_1 + 1,
+                        afps.num_ref_idx_default_active_minus1 + 1,
                     ) as usize
                 }
             }
@@ -237,6 +266,22 @@ impl AtlasHighLevelSyntax {
             .rev()
             .find(|v| v.video_type == video_type)
     }
+
+    /// Get the index of the atlas tile layer with the given frame and tile.
+    #[inline]
+    pub(crate) fn get_atlas_tile_layer_index(
+        &self,
+        frame_index: usize,
+        tile_index: usize,
+    ) -> usize {
+        self.atlas_tile_layer
+            .iter()
+            .enumerate()
+            .find(|(_, atgl)| {
+                atgl.enc_frame_index == frame_index && atgl.enc_tile_index == tile_index
+            })
+            .map_or(0, |(i, _)| i)
+    }
 }
 
 pub(crate) type VideoOccupancyMap = Video<u8>;
@@ -244,7 +289,7 @@ pub(crate) type VideoGeometry = Video<u16>;
 pub(crate) type VideoAttribute = Video<u16>;
 
 /// Context for a collection of frames
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct AtlasContext {
     // atlas_index: usize, // always 0 for V3C
 
@@ -276,6 +321,7 @@ pub(crate) struct AtlasContext {
 
 /// Context for an atlas frame.
 /// It contains context for each patch that makes up the frame.
+#[derive(Clone)]
 pub(crate) struct AtlasFrameContext {
     // frame_index: usize,
     pub frame_width: u16,
@@ -320,7 +366,7 @@ impl Default for AtlasFrameContext {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct TileContext {
     pub frame_index: u8,
     pub tile_index: u32,

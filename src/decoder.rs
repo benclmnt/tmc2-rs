@@ -1,10 +1,17 @@
 use crate::{
     bitstream::{
-        reader::{PatchDataUnit, PatchModeITile, PatchModePTile, TileType},
+        reader::{
+            NalUnitType, PatchDataUnit, PatchModeITile, PatchModePTile, SeiPayloadType, TileType,
+        },
         VideoBitstream, VideoType,
     },
-    common::context::{
-        AtlasFrameContext, TileContext, VideoAttribute, VideoGeometry, VideoOccupancyMap,
+    codec::{self, EomParams},
+    common::{
+        context::{
+            AtlasContext, AtlasFrameContext, TileContext, VideoAttribute, VideoGeometry,
+            VideoOccupancyMap,
+        },
+        ColorFormat,
     },
 };
 
@@ -76,7 +83,7 @@ pub struct Params {
     reconstruction_eom_type: bool,
     duplicated_point_removal_type: bool,
     reconstruct_raw_type: bool,
-    apply_geo_smooting_type: bool,
+    apply_geo_smoothing_type: bool,
     apply_attr_smoothing_type: bool,
     attr_transfer_filter_type: bool,
     apply_occupancy_synthesis_type: bool,
@@ -119,20 +126,19 @@ impl Decoder {
         // TODO(12Dec22): this function can be parallelized it seems
         // if ( params_.nbThread_ > 0 ) { tbb::task_scheduler_init init( static_cast<int>( params_.nbThread_ ) ); }
 
-        let gof = GroupOfFrames::default();
-
-        Self::create_patch_frame(context);
+        let atlas_context = Self::create_patch_frame(context);
 
         let sps = context.get_vps().expect("VPS not found");
         let ai = &sps.attribute_information;
         let oi = &sps.occupancy_information;
         let gi = &sps.geometry_information;
         let asps = context.get_atlas_sequence_parameter_set(0);
-        let frame_count = context.atlas_contexts.frame_contexts.len();
+        let frame_count = atlas_context.frame_contexts.len();
         let ptl = &sps.profile_tier_level;
-        let map_count = sps.map_count_minus_1 + 1;
-        let geometry_bitdepth = gi.geometry_2d_bitdepth_minus_1 + 1;
+        let map_count = sps.map_count_minus1 + 1;
+        let geometry_bitdepth = gi.geometry_2d_bitdepth_minus1 + 1;
 
+        // TODO: maybe move this to context struct?
         let has_aux_data = asps.raw_patch_enabled_flag
             && asps.auxiliary_video_enabled_flag
             && sps.auxiliary_video_present_flag;
@@ -180,7 +186,7 @@ impl Decoder {
             )
             .unwrap();
         // context.getVideoOccupancyMap() = occ_video
-        assert_eq!(oi.occupancy_2d_bitdepth_minus_1, 7);
+        assert_eq!(oi.occupancy_2d_bitdepth_minus1, 7);
         assert!(!oi.occupancy_msb_align_flag);
         // context.getVideoOccupancyMap().convertBitdepth( 8, oi.getOccupancy2DBitdepthMinus1() + 1,
         //                                           oi.getOccupancyMSBAlignFlag() );
@@ -222,11 +228,11 @@ impl Decoder {
         // We only have 1 attribute actually
         assert_eq!(ai.attribute_count, 1);
         for i in 0..ai.attribute_count {
-            let attribute_bitdepth = ai.attribute_2d_bitdepth_minus_1[i as usize] + 1;
+            let attribute_bitdepth = ai.attribute_2d_bitdepth_minus1[i as usize] + 1;
             // unused
             let attribute_type_id = ai.attribute_type_id[i as usize];
             let attribute_partition_dimension =
-                ai.attribute_dimension_partitions_minus_1[i as usize] + 1;
+                ai.attribute_dimension_partitions_minus1[i as usize] + 1;
             let attribute_codec_id = CodecId::from(ai.attribute_codec_id[i as usize]);
             assert_eq!(attribute_partition_dimension, 1);
 
@@ -272,14 +278,57 @@ impl Decoder {
         }
 
         // Reconstruction
+        let mut gof = GroupOfFrames {
+            frames: Vec::with_capacity(frame_count),
+        };
         // TODO: recreating the prediction list per attribute (either the attribtue is coded absolute, or follows the geometry)
 
         debug!("generate point cloud of {} frames", frame_count);
+        // TODO: Looks like this is embarassingly parallel
+        assert!(frame_count <= atlas_context.frame_contexts.len());
+        for frame_idx in 0..frame_count {
+            // all video have been decoded, start reconstruction processes
+            if has_aux_data {
+                unimplemented!("Auxiliary data not implemented")
+            }
+
+            let occupancy_precision = sps.frame_width as u32 / occ_video.width();
+            let reconstruct = PointSet3::default();
+            println!("[todel] call generatePointCloud()");
+            // DIFF: we assume only 1 attributes are ever.
+            let acc_tile_point_count = 0usize;
+            assert_eq!(
+                atlas_context.frame_contexts[frame_idx].num_tiles_in_atlas_frame, 1,
+                "we only support 1 tile per frame for now"
+            );
+            for tile_idx in
+                0..atlas_context.frame_contexts[frame_idx].num_tiles_in_atlas_frame as usize
+            {
+                let atgl_idx = context
+                    .atlas_hls
+                    .get_atlas_tile_layer_index(frame_idx, tile_idx);
+                assert_eq!(
+                    atgl_idx, 0,
+                    "looks like that's the case for decoding after reading the code..."
+                );
+                let gpc_params = self.generate_point_cloud_params(
+                    context,
+                    atgl_idx,
+                    occupancy_precision as usize,
+                );
+                // let pp_sei_params = self.post_processing_sei_params(context, atgl_index);
+            }
+
+            gof.frames.push(reconstruct);
+        }
         gof
     }
 
     /// Create the context for all patches in all frames in atlas_context
-    fn create_patch_frame(context: &mut Context) {
+    fn create_patch_frame(context: &mut Context) -> AtlasContext {
+        let mut atlas_ctx = AtlasContext {
+            frame_contexts: Vec::with_capacity(context.atlas_tile_layer_len()),
+        };
         let mut frame_count = 0;
         Self::set_tile_partition_size_afti(context);
 
@@ -342,6 +391,8 @@ impl Decoder {
                 0,
                 atgl_idx
             );
+
+            let patch_count = atgdu.patch_information_data.len();
             afc.tile_frame_context = TileContext {
                 frame_index,
                 atlas_frame_order_count_val: atlu.atlas_frame_order_count_val,
@@ -352,6 +403,7 @@ impl Decoder {
                     && asps.auxiliary_video_enabled_flag,
                 raw_patch_enabled_flag: asps.raw_patch_enabled_flag,
                 log2_patch_quantizer_size: ath.patch_size_info_quantizer,
+                patches: Vec::with_capacity(patch_count),
                 ..afc.tile_frame_context
             };
 
@@ -362,7 +414,6 @@ impl Decoder {
             }
 
             let tile_type = ath.tile_type;
-            let patch_count = atgdu.patch_information_data.len();
             let min_level: usize = 1 << ath.pos_min_d_quantizer;
             // skipped: find the number of raw patches and eom patches
 
@@ -397,22 +448,22 @@ impl Decoder {
                             },
                             size_uv: if asps.patch_size_quantizer_present_flag {
                                 (
-                                    ((pdu.size_2d_minus_1.0 + 1) as f64
+                                    ((pdu.size_2d_minus1.0 + 1) as f64
                                         * (1 << ath.patch_size_info_quantizer.0) as f64
                                         / packing_block_size as f64)
                                         .ceil() as usize,
-                                    ((pdu.size_2d_minus_1.1 + 1) as f64
+                                    ((pdu.size_2d_minus1.1 + 1) as f64
                                         * (1 << ath.patch_size_info_quantizer.1) as f64
                                         / packing_block_size as f64)
                                         .ceil() as usize,
                                 )
                             } else {
-                                (pdu.size_2d_minus_1.0 + 1, pdu.size_2d_minus_1.1 + 1)
+                                (pdu.size_2d_minus1.0 + 1, pdu.size_2d_minus1.1 + 1)
                             },
                             size_2d_in_pixel: if asps.patch_size_quantizer_present_flag {
                                 (
-                                    pdu.size_2d_minus_1.0 * (1 << ath.patch_size_info_quantizer.0),
-                                    pdu.size_2d_minus_1.1 * (1 << ath.patch_size_info_quantizer.1),
+                                    pdu.size_2d_minus1.0 * (1 << ath.patch_size_info_quantizer.0),
+                                    pdu.size_2d_minus1.1 * (1 << ath.patch_size_info_quantizer.1),
                                 )
                             } else {
                                 (0, 0)
@@ -465,10 +516,11 @@ impl Decoder {
             }
 
             std::mem::drop(afps);
-            context.atlas_contexts.frame_contexts.push(afc);
+            atlas_ctx.frame_contexts.push(afc);
         }
 
         // skipped: create hash sei for the last tile in frames.
+        atlas_ctx
     }
 
     /// Sets partition's size (height and width) in AFTI
@@ -540,6 +592,80 @@ impl Decoder {
         }
         afc
     }
+
+    fn generate_point_cloud_params(
+        &self,
+        context: &Context,
+        atgl_index: usize,
+        occupancy_precision: usize,
+    ) -> codec::GeneratePointCloudParams {
+        let sps = context.get_vps().expect("VPS not found");
+        let ai = &sps.attribute_information;
+        let oi = &sps.occupancy_information;
+        let gi = &sps.geometry_information;
+        let asps = context.get_atlas_sequence_parameter_set(0);
+        let ptl = &sps.profile_tier_level;
+
+        let mut params = codec::GeneratePointCloudParams {
+            occupancy_resolution: 1 << asps.log2_patch_packing_block_size,
+            occupancy_precision,
+            enable_size_quantization: asps.patch_size_quantizer_present_flag,
+            absolute_d1: sps.map_count_minus1 == 0 || sps.map_absolute_coding_enable_flag[1],
+            multiple_streams: sps.multiple_map_streams_present_flag,
+            surface_thickness: asps.vpcc_extension.surface_thickness_minus1 + 1,
+            remove_duplicate_points: self.params.point_local_reconstruction_type
+                && asps.plr_enabled_flag,
+            map_count_minus1: sps.map_count_minus1,
+            single_map_pixel_interleaving: self.params.pixel_deinterleaving_type
+                && asps.pixel_deinterleaving_flag,
+            use_additional_points_patch: self.params.reconstruct_raw_type
+                && asps.raw_patch_enabled_flag,
+            use_aux_separate_video: asps.auxiliary_video_enabled_flag,
+            enhanced_occupancy_map: if self.params.reconstruction_eom_type
+                && asps.eom_patch_enabled_flag
+            {
+                Some(EomParams {
+                    fix_bitcount: asps.eom_fix_bit_count_minus1 + 1,
+                })
+            } else {
+                None
+            },
+            geometry_bitdepth_3d: gi.geometry_3d_coordinates_bitdepth_minus1 + 1,
+            ..Default::default()
+        };
+
+        if self.params.apply_geo_smoothing_type
+            && context.is_sei_present(
+                NalUnitType::PrefixESEI,
+                SeiPayloadType::GeometrySmoothing,
+                atgl_index,
+            )
+        {
+            unimplemented!()
+        }
+
+        if self.params.apply_occupancy_synthesis_type
+            && context.is_sei_present(
+                NalUnitType::PrefixESEI,
+                SeiPayloadType::OccupancySynthesis,
+                atgl_index,
+            )
+        {
+            unimplemented!()
+        }
+
+        if self.params.apply_attr_smoothing_type
+            && context.is_sei_present(
+                NalUnitType::PrefixESEI,
+                SeiPayloadType::AttributeSmoothing,
+                atgl_index,
+            )
+        {
+            unimplemented!()
+        }
+
+        params
+    }
 }
 
 enum PatchType {
@@ -588,7 +714,7 @@ pub(crate) enum PatchOrientation {
 }
 
 /// Originally PCCPatch
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Patch {
     patch_index: usize,
     original_index: usize,
@@ -773,15 +899,6 @@ pub(crate) struct Image<T> {
     _phantom: PhantomData<T>,
 }
 
-#[derive(Default, Debug, Clone, Copy)]
-pub(crate) enum ColorFormat {
-    Unknown,
-    Rgb444,
-    Yuv444,
-    #[default]
-    Yuv420,
-}
-
 #[derive(Default)]
 struct VideoDecoderOptions {
     codec_id: CodecId,
@@ -809,7 +926,7 @@ trait VideoDecoder {
         T: Copy + Default,
     {
         // TODO: construct the filename for the decoded binstream
-
+        println!("[todel] bitstream len {}", bitstream.data.len());
         let data = if opts.bytestream_video_coder {
             bitstream.sample_stream_to_bytestream(opts.codec_id, 4)
         } else {
@@ -858,6 +975,8 @@ impl VideoDecoder for LibavcodecDecoder {
         use tempfile::NamedTempFile;
 
         let mut tmpfile = NamedTempFile::new().unwrap();
+        println!("{:?}", &tmpfile.path());
+        println!("len data {}", data.len());
         // TODO: use a buffer instead of writing to a tmpfile
         // Currently we write to disk because I can't figure out how to use ffmpeg API with a buffer
         // The tmpfile is not significant. It will be deleted when it goes out of scope
