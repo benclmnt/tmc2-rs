@@ -1,17 +1,18 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::hash_map::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
-use crate::bitstream::VideoType;
 use crate::bitstream::{
     reader,
     reader::{
         AtlasFrameParameterSetRbsp, AtlasSequenceParameterSetRbsp, AtlasTileHeader,
         AtlasTileLayerRbsp, V3CParameterSet, V3CUnitHeader, V3CUnitType,
     },
-    VideoBitstream,
+    VideoBitstream, VideoType,
 };
-use crate::decoder::{Patch, Video};
+use crate::common::{VideoAttribute, VideoGeometry, VideoOccupancyMap};
+use crate::decoder::{Image, Patch, Video};
 use cgmath::Vector3;
 
 pub type Context = RawContext;
@@ -22,6 +23,7 @@ pub struct RawContext {
     // pub model_origin: Vector3<f64>,
     // pub model_scale: f64,
     // pub atlas_index: u8,
+    // NOTE: we don't put atlas_context together with RawContext to avoid mutability issues
     // pub(crate) atlas_contexts: AtlasContext,
 
     // PCCHighLevelSyntax.h
@@ -284,10 +286,6 @@ impl AtlasHighLevelSyntax {
     }
 }
 
-pub(crate) type VideoOccupancyMap = Video<u8>;
-pub(crate) type VideoGeometry = Video<u16>;
-pub(crate) type VideoAttribute = Video<u16>;
-
 /// Context for a collection of frames
 #[derive(Default, Clone)]
 pub(crate) struct AtlasContext {
@@ -295,20 +293,18 @@ pub(crate) struct AtlasContext {
 
     // encoding-only parameter
     // log2_max_atlas_frame_order_cnt_lsb: usize,
-    pub(crate) frame_contexts: Vec<AtlasFrameContext>,
+    pub(crate) frame_contexts: Vec<RefCell<AtlasFrameContext>>,
     // frames_in_afps: Vec<(usize, usize)>,
-    // pub(crate) occ_frames: VideoOccupancyMap,
+    pub(crate) occ_frames: VideoOccupancyMap,
     // occ_bitdepth: Vec<usize>,
     // occ_width: Vec<usize>,
     // occ_height: Vec<usize>,
-
-    // geo_frames: Vec<VideoGeometry>,
+    pub(crate) geo_frames: Vec<VideoGeometry>,
     // geo_bitdepth: Vec<usize>,
     // geo_width: Vec<usize>,
     // geo_height: Vec<usize>,
     // geo_aux_frames: VideoGeometry,
-
-    // attr_frames: Vec<VideoAttribute>,
+    pub(crate) attr_frames: Vec<VideoAttribute>,
     // attr_bitdepth: Vec<usize>,
     // attr_width: Vec<usize>,
     // attr_height: Vec<usize>,
@@ -319,13 +315,33 @@ pub(crate) struct AtlasContext {
     // union_patch: Vec<UnionPatch>,
 }
 
+impl AtlasContext {
+    pub(crate) fn frame_count(&self) -> usize {
+        self.frame_contexts.len()
+    }
+
+    pub(crate) fn get_frame_context(
+        &self,
+        frame_index: usize,
+    ) -> impl Deref<Target = AtlasFrameContext> + '_ {
+        self.frame_contexts[frame_index].borrow()
+    }
+
+    pub(crate) fn get_mut_frame_context(
+        &self,
+        frame_index: usize,
+    ) -> impl DerefMut<Target = AtlasFrameContext> + '_ {
+        self.frame_contexts[frame_index].borrow_mut()
+    }
+}
+
 /// Context for an atlas frame.
 /// It contains context for each patch that makes up the frame.
 #[derive(Clone)]
 pub(crate) struct AtlasFrameContext {
     // frame_index: usize,
-    pub frame_width: u16,
-    pub frame_height: u16,
+    pub frame_width: u32,
+    pub frame_height: u32,
     pub num_tiles_in_atlas_frame: u16, // (13Dec22) u16 because it is always 1. Originally usize
     /// (12Dec22) Always true
     pub single_partition_per_tile: bool,
@@ -350,7 +366,7 @@ pub(crate) struct AtlasFrameContext {
     /// since `single_partition_per_tile` is true, we can change this to a non-vec field.
     ///
     /// Originally: titleFrameContext
-    pub tile_frame_context: TileContext,
+    pub title_frame_context: TileContext,
 }
 
 impl Default for AtlasFrameContext {
@@ -361,24 +377,34 @@ impl Default for AtlasFrameContext {
             frame_height: 0,
             num_tiles_in_atlas_frame: 0,
             single_partition_per_tile: true,
-            tile_frame_context: TileContext::default(),
+            title_frame_context: TileContext::default(),
         }
     }
 }
 
+impl AtlasFrameContext {
+    #[inline]
+    pub(crate) fn get_tile_mut(&mut self, tile_index: usize) -> &mut TileContext {
+        assert_eq!(tile_index, 0, "we only support 1 tile per frame for now");
+        assert_eq!(self.num_tiles_in_atlas_frame, 1);
+        &mut self.title_frame_context
+    }
+}
+
+/// Originally PCCFrameContext
 #[derive(Default, Clone)]
 pub(crate) struct TileContext {
-    pub frame_index: u8,
-    pub tile_index: u32,
+    pub frame_index: usize,
+    pub tile_index: usize,
     pub atl_index: usize,
     pub num_matched_patches: usize,
-    pub(crate) width: u16,
-    pub(crate) height: u16,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     pub left_top_in_frame: (usize, usize),
     // number_of_raw_points_patches: usize,
     // total_number_of_raw_points: usize,
     // total_number_of_eom_points: usize,
-    // pub total_number_of_regular_points: usize,
+    pub total_number_of_regular_points: usize,
     pub global_patch_count: usize,
     pub geometry_3d_coordinates_bitdepth: usize,
     pub point_local_reconstruction_number: usize,
@@ -396,7 +422,7 @@ pub(crate) struct TileContext {
     pub log2_patch_quantizer_size: (u8, u8),
     pub point_to_pixel: Vec<Vector3<usize>>,
     pub block_to_patch: Vec<usize>,
-    pub occupancy_map: Vec<u32>,
+    pub occupancy_map: Vec<u8>,
     pub full_occupancy_map: Vec<u32>,
     pub patches: Vec<Patch>,
     // raw_points_patches: Vec<RawPointsPatch>,

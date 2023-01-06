@@ -1,5 +1,7 @@
 pub mod context;
 
+use crate::decoder::{Image, Video};
+
 pub(crate) enum CodecGroup {
     // AvcProgressiveHigh = 0,
     HevcMain10 = 1,
@@ -15,3 +17,11 @@ pub(crate) enum ColorFormat {
     #[default]
     Yuv420,
 }
+
+pub(crate) type VideoOccupancyMap = Video<u8>;
+pub(crate) type VideoGeometry = Video<u16>;
+pub(crate) type VideoAttribute = Video<u16>;
+pub(crate) type ImageOccupancyMap = Image<u8>;
+pub(crate) type ImageGeometry = Image<u16>;
+
+pub(crate) const INTERMEDIATE_LAYER_INDEX: usize = 100;

@@ -218,7 +218,7 @@ impl VideoBitstream {
 
         let mut size_start_code = 4;
         let mut start_index = 0;
-        let mut end_index = 0;
+        // let mut end_index = 0;
         let mut new_frame = true;
         let mut result = Vec::with_capacity(self.data.len());
 
@@ -228,7 +228,7 @@ impl VideoBitstream {
                 nalu_size = (nalu_size << 8) + self.data[start_index + i] as usize;
             }
 
-            end_index = start_index + precision + nalu_size;
+            let end_index = start_index + precision + nalu_size;
 
             for _ in 0..size_start_code - 1 {
                 result.push(0);
@@ -245,8 +245,7 @@ impl VideoBitstream {
 
             start_index = end_index;
             if start_index + precision < self.data.len() {
-                let mut nalu_type = 0;
-                let mut use_long_start_code = false;
+                let use_long_start_code: bool;
                 new_frame = false;
                 match codec_id {
                     CodecId::H264 => use_long_start_code = true,
@@ -256,7 +255,7 @@ impl VideoBitstream {
                         //   nalu.m_nalUnitType = (NalUnitType) bs.read(6);  // nal_unit_type
                         //   nalu.m_nuhLayerId = bs.read(6);                 // nuh_layer_id
                         //   nalu.m_temporalId = bs.read(3) - 1;             // nuh_temporal_id_plus1
-                        nalu_type = (self.data[start_index + precision + 1] & 126) >> 1;
+                        let nalu_type = (self.data[start_index + precision] & 126) >> 1;
                         use_long_start_code = new_frame || (nalu_type >= 32 && nalu_type < 41);
                         if nalu_type < 12 {
                             new_frame = true;
@@ -269,7 +268,7 @@ impl VideoBitstream {
                         //   nalu.m_nuhLayerId         = bs.read(6);                 // nuh_layer_id
                         //   nalu.m_nalUnitType        = (NalUnitType) bs.read(5);   // nal_unit_type
                         //   nalu.m_temporalId         = bs.read(3) - 1;             // nuh_temporal_id_plus1
-                        nalu_type = (self.data[start_index + precision + 1] & 248) >> 3;
+                        let nalu_type = (self.data[start_index + precision + 1] & 248) >> 3;
                         use_long_start_code = new_frame || (nalu_type >= 12 && nalu_type < 20);
                         if nalu_type < 12 {
                             new_frame = true;

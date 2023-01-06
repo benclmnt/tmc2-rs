@@ -5,63 +5,19 @@ use crate::{
         },
         VideoBitstream, VideoType,
     },
-    codec::{self, EomParams},
+    codec::{self, generate_point_cloud, EomParams, GroupOfFrames, Point3D, PointSet3},
     common::{
-        context::{
-            AtlasContext, AtlasFrameContext, TileContext, VideoAttribute, VideoGeometry,
-            VideoOccupancyMap,
-        },
-        ColorFormat,
+        context::{AtlasContext, AtlasFrameContext, TileContext},
+        ColorFormat, VideoAttribute, VideoGeometry, VideoOccupancyMap,
     },
 };
 
 use super::common::context::Context;
-use cgmath::{Matrix3, Vector3};
 use log::{debug, trace};
 use num_enum::FromPrimitive;
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::path::PathBuf;
-
-type Point3D = Vector3<i16>;
-type Vector3D = Vector3<usize>;
-type Color3B = Vector3<u8>;
-type Color16bit = Vector3<u16>;
-type Normal3D = Vector3<usize>;
-type Matrix3D = Matrix3<usize>;
-
-#[derive(Debug, Default)]
-struct PointSet3 {
-    positions: Vec<Point3D>,
-    colors: Vec<Color3B>,
-    colors16bit: Vec<Color16bit>,
-    reflectances: Vec<u16>,
-    boundary_point_types: Vec<u16>,
-    point_patch_indexes: Vec<(usize, usize)>,
-    parent_point_index: Vec<usize>,
-    types: Vec<u8>,
-    normals: Vec<Normal3D>,
-    with_normals: bool,
-    with_colors: bool,
-    with_reflectances: bool,
-}
-
-#[derive(Debug, Default)]
-pub struct GroupOfFrames {
-    frames: Vec<PointSet3>,
-}
-
-impl GroupOfFrames {
-    fn load() -> bool {
-        // TODO
-        true
-    }
-
-    fn write() -> bool {
-        // TODO
-        true
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct Params {
     pub start_frame: usize,
@@ -126,14 +82,14 @@ impl Decoder {
         // TODO(12Dec22): this function can be parallelized it seems
         // if ( params_.nbThread_ > 0 ) { tbb::task_scheduler_init init( static_cast<int>( params_.nbThread_ ) ); }
 
-        let atlas_context = Self::create_patch_frame(context);
+        let mut atlas_context = Self::create_patch_frame(context);
 
         let sps = context.get_vps().expect("VPS not found");
         let ai = &sps.attribute_information;
         let oi = &sps.occupancy_information;
         let gi = &sps.geometry_information;
         let asps = context.get_atlas_sequence_parameter_set(0);
-        let frame_count = atlas_context.frame_contexts.len();
+        let frame_count = atlas_context.frame_count();
         let ptl = &sps.profile_tier_level;
         let map_count = sps.map_count_minus1 + 1;
         let geometry_bitdepth = gi.geometry_2d_bitdepth_minus1 + 1;
@@ -185,7 +141,7 @@ impl Decoder {
                 },
             )
             .unwrap();
-        // context.getVideoOccupancyMap() = occ_video
+        atlas_context.occ_frames = occ_video;
         assert_eq!(oi.occupancy_2d_bitdepth_minus1, 7);
         assert!(!oi.occupancy_msb_align_flag);
         // context.getVideoOccupancyMap().convertBitdepth( 8, oi.getOccupancy2DBitdepthMinus1() + 1,
@@ -216,7 +172,7 @@ impl Decoder {
                     },
                 )
                 .unwrap();
-            // context.getVideoGeometryMultiple(0) = geo_video
+            atlas_context.geo_frames.push(geo_video);
             assert!(!gi.geometry_msb_align_flag);
             // context.getVideoGeometryMultiple(0).convertBitdepth( geometry_bitdepth, gi.getGeometry2DBitdepthMinus1() + 1, gi.geometry_msb_align_flag );
         }
@@ -268,7 +224,7 @@ impl Decoder {
                             },
                         )
                         .unwrap();
-                    // context.getVideoAttributeMultiple(0) = attr_video
+                    atlas_context.attr_frames.push(attr_video);
 
                     if has_aux_data {
                         unimplemented!("Auxiliary attribute video not implemented")
@@ -285,25 +241,28 @@ impl Decoder {
 
         debug!("generate point cloud of {} frames", frame_count);
         // TODO: Looks like this is embarassingly parallel
-        assert!(frame_count <= atlas_context.frame_contexts.len());
+        assert!(frame_count <= atlas_context.frame_count());
         for frame_idx in 0..frame_count {
             // all video have been decoded, start reconstruction processes
             if has_aux_data {
                 unimplemented!("Auxiliary data not implemented")
             }
 
-            let occupancy_precision = sps.frame_width as u32 / occ_video.width();
-            let reconstruct = PointSet3::default();
-            println!("[todel] call generatePointCloud()");
+            let occupancy_precision = sps.frame_width as usize / atlas_context.occ_frames.width();
+            let mut reconstruct = PointSet3::default();
             // DIFF: we assume only 1 attributes are ever.
             let acc_tile_point_count = 0usize;
             assert_eq!(
-                atlas_context.frame_contexts[frame_idx].num_tiles_in_atlas_frame, 1,
+                atlas_context
+                    .get_frame_context(frame_idx)
+                    .num_tiles_in_atlas_frame,
+                1,
                 "we only support 1 tile per frame for now"
             );
-            for tile_idx in
-                0..atlas_context.frame_contexts[frame_idx].num_tiles_in_atlas_frame as usize
-            {
+            let frame_context = atlas_context.get_frame_context(frame_idx);
+            let num_tiles_in_atlas_frame = frame_context.num_tiles_in_atlas_frame as usize;
+            std::mem::drop(frame_context);
+            for tile_idx in 0..num_tiles_in_atlas_frame {
                 let atgl_idx = context
                     .atlas_hls
                     .get_atlas_tile_layer_index(frame_idx, tile_idx);
@@ -311,12 +270,78 @@ impl Decoder {
                     atgl_idx, 0,
                     "looks like that's the case for decoding after reading the code..."
                 );
-                let gpc_params = self.generate_point_cloud_params(
-                    context,
-                    atgl_idx,
-                    occupancy_precision as usize,
-                );
-                // let pp_sei_params = self.post_processing_sei_params(context, atgl_index);
+                let gpc_params =
+                    self.new_generate_point_cloud_params(context, atgl_idx, occupancy_precision);
+                // pp_sei_params is mostly the same as gpc_params with some difference in handling attribute smoothing,
+                // some of which we will ignore as I don't quite understand it yet
+                //
+                // < is postProcessing, > is generate point cloud
+                // 143c143
+                // <         for ( size_t i = 0; i < sei->getInstancesUpdated( k ); i++ ) {
+                // ---
+                // >         for ( size_t i = 0; i < sei->getInstancesUpdated( k ) + 1; i++ ) {
+                // 149c149
+                // <
+                // ---
+                // >             if ( sei->getMethodType( k, m ) == 1 ) { <--- in AttributeSmoothing if-clause
+                // 182a187,188
+                // >   params.useAuxSeperateVideo_           = asps.getAuxiliaryVideoEnabledFlag();
+                // >
+                let mut pp_sei_params =
+                    self.new_generate_point_cloud_params(context, atgl_idx, occupancy_precision);
+                pp_sei_params.use_aux_separate_video = false;
+
+                trace!("processing frame {}, tile {}", frame_idx, tile_idx);
+                if pp_sei_params.pbf.is_some() {
+                    unimplemented!("PBF not implemented")
+                }
+
+                if num_tiles_in_atlas_frame > 1 {
+                    unimplemented!("Multiple tiles not implemented")
+                } else {
+                    let mut frame_context = atlas_context.get_mut_frame_context(frame_idx);
+                    let tile = frame_context.get_tile_mut(tile_idx);
+                    let block_to_patch = codec::generate_block_to_patch_from_occupancy_map_video(
+                        tile,
+                        &atlas_context.occ_frames.frames[frame_idx],
+                        1 << asps.log2_patch_packing_block_size,
+                        occupancy_precision,
+                    );
+                    tile.block_to_patch = block_to_patch;
+                }
+
+                let (mut tile_construct, partition) = {
+                    let mut frame_context = atlas_context.get_mut_frame_context(frame_idx);
+                    let tile = frame_context.get_tile_mut(tile_idx);
+                    generate_point_cloud(
+                        context,
+                        &atlas_context,
+                        tile,
+                        frame_idx,
+                        tile_idx,
+                        &gpc_params,
+                        true,
+                    )
+                    .unwrap()
+                };
+
+                if num_tiles_in_atlas_frame > 1 {
+                    unimplemented!("Multiple tiles not implemented")
+                }
+
+                if ai.attribute_count > 0 {
+                    reconstruct.add_colors();
+                }
+
+                for attr_idx in 0..ai.attribute_count {
+                    trace!(
+                        "start colorPointCloud attIdx = {}/{}",
+                        attr_idx,
+                        ai.attribute_count
+                    );
+                }
+
+                reconstruct.append_point_set(tile_construct);
             }
 
             gof.frames.push(reconstruct);
@@ -328,6 +353,7 @@ impl Decoder {
     fn create_patch_frame(context: &mut Context) -> AtlasContext {
         let mut atlas_ctx = AtlasContext {
             frame_contexts: Vec::with_capacity(context.atlas_tile_layer_len()),
+            ..Default::default()
         };
         let mut frame_count = 0;
         Self::set_tile_partition_size_afti(context);
@@ -393,18 +419,18 @@ impl Decoder {
             );
 
             let patch_count = atgdu.patch_information_data.len();
-            afc.tile_frame_context = TileContext {
-                frame_index,
+            afc.title_frame_context = TileContext {
+                frame_index: frame_index as usize,
                 atlas_frame_order_count_val: atlu.atlas_frame_order_count_val,
                 atlas_frame_order_count_msb: atlu.atlas_frame_order_count_msb,
-                tile_index,
+                tile_index: tile_index as usize,
                 atl_index: atgl_idx,
                 use_raw_points_separate_video: sps.auxiliary_video_present_flag
                     && asps.auxiliary_video_enabled_flag,
                 raw_patch_enabled_flag: asps.raw_patch_enabled_flag,
                 log2_patch_quantizer_size: ath.patch_size_info_quantizer,
                 patches: Vec::with_capacity(patch_count),
-                ..afc.tile_frame_context
+                ..afc.title_frame_context
             };
 
             if frame_index > 0 && ath.tile_type != TileType::I {
@@ -446,7 +472,7 @@ impl Decoder {
                             } else {
                                 pdu.pos_3d_range_d * min_level - 1
                             },
-                            size_uv: if asps.patch_size_quantizer_present_flag {
+                            size_uv0: if asps.patch_size_quantizer_present_flag {
                                 (
                                     ((pdu.size_2d_minus1.0 + 1) as f64
                                         * (1 << ath.patch_size_info_quantizer.0) as f64
@@ -484,12 +510,12 @@ impl Decoder {
                                 || patch.axes == (2, 0, 1)
                         );
 
-                        trace!("patch(Intra) {}: UV0 {:?} UV1 {:?} D1={} S={:?} {}({}) P={} O={:?} A={:?} 45={} ProjId={} Axis={}", patch_idx, patch.uv0, patch.uv1, patch.d1, patch.size_uv, patch.size_d, pdu.pos_3d_range_d, patch.projection_mode, patch.patch_orientation, patch.axes, asps.extended_projection_enabled_flag, pdu.projection_id, patch.axis_of_additional_plane);
+                        trace!("patch(Intra) {}: UV0 {:?} UV1 {:?} D1={} S={:?} {}({}) P={} O={:?} A={:?} 45={} ProjId={} Axis={}", patch_idx, patch.uv0, patch.uv1, patch.d1, patch.size_uv1, patch.size_d, pdu.pos_3d_range_d, patch.projection_mode, patch.patch_orientation, patch.axes, asps.extended_projection_enabled_flag, pdu.projection_id, patch.axis_of_additional_plane);
                         // patch.alloc_one_layer_data (for PLR)
                         if asps.plr_enabled_flag {
                             unimplemented!("plr data not supported");
                         }
-                        afc.tile_frame_context.patches.push(patch);
+                        afc.title_frame_context.patches.push(patch);
                     }
                     PatchType::Inter => {
                         unimplemented!("inter patch not implemented");
@@ -516,7 +542,7 @@ impl Decoder {
             }
 
             std::mem::drop(afps);
-            atlas_ctx.frame_contexts.push(afc);
+            atlas_ctx.frame_contexts.push(RefCell::new(afc));
         }
 
         // skipped: create hash sei for the last tile in frames.
@@ -573,7 +599,7 @@ impl Decoder {
                 frame_width,
                 frame_height,
                 num_tiles_in_atlas_frame: 1,
-                tile_frame_context: TileContext {
+                title_frame_context: TileContext {
                     width: frame_width,
                     height: frame_height,
                     ..Default::default()
@@ -593,14 +619,14 @@ impl Decoder {
         afc
     }
 
-    fn generate_point_cloud_params(
+    /// Create parameters to generate point cloud
+    fn new_generate_point_cloud_params(
         &self,
         context: &Context,
         atgl_index: usize,
         occupancy_precision: usize,
     ) -> codec::GeneratePointCloudParams {
         let sps = context.get_vps().expect("VPS not found");
-        let ai = &sps.attribute_information;
         let oi = &sps.occupancy_information;
         let gi = &sps.geometry_information;
         let asps = context.get_atlas_sequence_parameter_set(0);
@@ -641,7 +667,7 @@ impl Decoder {
                 atgl_index,
             )
         {
-            unimplemented!()
+            unimplemented!("geometry smoothing not implemented")
         }
 
         if self.params.apply_occupancy_synthesis_type
@@ -651,7 +677,7 @@ impl Decoder {
                 atgl_index,
             )
         {
-            unimplemented!()
+            unimplemented!("occupancy synthesis not implemented")
         }
 
         if self.params.apply_attr_smoothing_type
@@ -661,7 +687,7 @@ impl Decoder {
                 atgl_index,
             )
         {
-            unimplemented!()
+            unimplemented!("attribute smoothing not implemented")
         }
 
         params
@@ -724,28 +750,29 @@ pub(crate) struct Patch {
 
     /// u1: tangential shift
     /// v1: bitangential shift
-    uv1: (usize, usize),
-    size_uv: (usize, usize),
+    pub(crate) uv1: (usize, usize),
+    size_uv1: (usize, usize),
     /// d1: depth shift
-    d1: usize,
+    pub(crate) d1: usize,
     /// size for depth
     size_d: usize,
     /// size D pixel
     size_d_pixel: usize,
 
     /// location in packed image (n * occupancy_resolution)
-    uv0: (usize, usize),
+    pub(crate) uv0: (usize, usize),
     /// size of occupancy map (n * occupancy resolution)
-    size_uv0: (usize, usize),
+    pub(crate) size_uv0: (usize, usize),
     size_2d_in_pixel: (usize, usize),
-    occupancy_resolution: usize,
+    pub(crate) occupancy_resolution: usize,
 
+    /// (LodScaleX, LodScaleYIdc)
     level_of_detail: (usize, usize),
     /// 0: related to min depth value, 1: related to the max value
-    projection_mode: u8,
+    pub(crate) projection_mode: u8,
     /// x: normal axis, y: tangent axis, z: bitangent axis
-    axes: (u8, u8, u8),
-    axis_of_additional_plane: u8,
+    pub(crate) axes: (u8, u8, u8),
+    pub(crate) axis_of_additional_plane: u8,
     depth: (i16, i16),
     /// occupancy map
     occupancy: Vec<bool>,
@@ -760,7 +787,7 @@ pub(crate) struct Patch {
     // /// for surface separation
     // depth_0pc_idx: Vec<i64>,
     /// patch orientation in canvas atlas
-    patch_orientation: PatchOrientation,
+    pub(crate) patch_orientation: PatchOrientation,
 
     // point_local_reconstruction_lvl: u8,
     // point_local_reconstruction_mode_by_patch: u8,
@@ -794,6 +821,7 @@ pub(crate) struct Patch {
 
 impl Patch {
     /// Sets view id, axes, projection mode
+    #[inline]
     fn set_view_id(&mut self, view_id: u8) {
         match view_id {
             0 => self.set_axis(0, 0, 2, 1, 0),
@@ -822,10 +850,77 @@ impl Patch {
         }
     }
 
+    #[inline]
     fn set_axis(&mut self, additional_plane: u8, normal: u8, tangent: u8, bitangent: u8, mode: u8) {
         self.axis_of_additional_plane = additional_plane;
         self.axes = (normal, tangent, bitangent);
         self.projection_mode = mode;
+    }
+
+    /// returns the index of the canvas block
+    ///
+    /// Originally PCCPatch::patchBlock2CanvasBlock. Ignore the tile parameters
+    #[inline]
+    pub(crate) fn patch_block_to_canvas_block(
+        &self,
+        u_blk: usize,
+        v_blk: usize,
+        canvas_stride_block: usize,
+        canvas_height_block: usize,
+    ) -> usize {
+        let (x, y) = self.patch_to_canvas_helper(u_blk, v_blk, 1);
+        assert!(x < canvas_stride_block && y < canvas_height_block);
+        y * canvas_stride_block + x
+    }
+
+    #[inline]
+    pub(crate) fn patch_to_canvas(
+        &self,
+        u: usize,
+        v: usize,
+        canvas_stride: usize,
+        canvas_height: usize,
+    ) -> (usize, usize) {
+        let (x, y) = self.patch_to_canvas_helper(u, v, self.occupancy_resolution);
+        assert!(x < canvas_stride && y < canvas_height);
+        (x, y)
+    }
+
+    #[inline]
+    fn patch_to_canvas_helper(&self, u: usize, v: usize, resolution: usize) -> (usize, usize) {
+        let (u0, v0) = (self.uv0.0 * resolution, self.uv0.1 * resolution);
+        let (size_u0, size_v0) = self.size_uv0;
+        match self.patch_orientation {
+            PatchOrientation::Default => (u + u0, v + v0),
+            PatchOrientation::Rot90 => (size_v0 - 1 - v + u0, u + v0),
+            PatchOrientation::Rot180 => (size_u0 - 1 - u + u0, size_v0 - 1 - v + v0),
+            PatchOrientation::Rot270 => (v + u0, size_u0 - 1 - u + v0),
+            PatchOrientation::Mirror => (size_u0 - 1 - u + u0, v + v0),
+            PatchOrientation::MRot90 => (size_v0 - 1 - v + u0, size_u0 - 1 - u + v0),
+            PatchOrientation::MRot180 => (u + u0, size_v0 - 1 - v + v0),
+            PatchOrientation::MRot270 => (v + u0, u + v0),
+            PatchOrientation::Swap => (v + u0, u + v0), // swap axis
+        }
+    }
+
+    /// Coordinates might be truncated values.
+    #[inline]
+    pub(crate) fn generate_point(&self, u: usize, v: usize, depth: u16) -> Point3D {
+        Point3D {
+            x: self.generate_normal_coordinate(depth) as u16,
+            y: (u * self.level_of_detail.0 + self.uv1.0) as u16,
+            z: (v * self.level_of_detail.1 + self.uv1.1) as u16,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn generate_normal_coordinate(&self, depth: u16) -> usize {
+        let depth = depth as usize;
+        match self.projection_mode {
+            0 => depth + self.d1,
+            1 => std::cmp::max(self.d1, depth) - depth,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -844,12 +939,12 @@ impl CodecId {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Video<T>
 where
     T: Copy + Default,
 {
-    pub(crate) frames: Vec<Image<T>>,
+    frames: Vec<Image<T>>,
 }
 
 impl<T> Video<T>
@@ -857,7 +952,7 @@ where
     T: Copy + Default,
 {
     #[inline]
-    fn width(&self) -> u32 {
+    pub(crate) fn width(&self) -> usize {
         if self.frames.is_empty() {
             0
         } else {
@@ -866,7 +961,7 @@ where
     }
 
     #[inline]
-    fn height(&self) -> u32 {
+    pub(crate) fn height(&self) -> usize {
         if self.frames.is_empty() {
             0
         } else {
@@ -875,28 +970,58 @@ where
     }
 
     #[inline]
-    fn frame_count(&self) -> usize {
+    pub(crate) fn frame_count(&self) -> usize {
         self.frames.len()
     }
 
     #[inline]
-    fn color_format(&self) -> ColorFormat {
+    pub(crate) fn color_format(&self) -> ColorFormat {
         if self.frames.is_empty() {
             ColorFormat::Unknown
         } else {
             self.frames[0].format
         }
     }
+
+    pub(crate) fn get(&self, index: usize) -> Option<&Image<T>> {
+        self.frames.get(index)
+    }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Image<T> {
     // can move this field to Video<T>?
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     channels: [Vec<u8>; 3],
     format: ColorFormat,
     _phantom: PhantomData<T>,
+}
+
+impl<T> Image<T> {
+    /// This is an internal function to get the index of the pixel in the image
+    fn get_helper(&self, channel: usize, u: usize, v: usize) -> usize {
+        assert!(channel < 3 && u < self.width as usize && v < self.height as usize);
+        match (self.format, channel) {
+            (ColorFormat::Yuv420, 0) => v * self.width + u,
+            (ColorFormat::Yuv420, _) => (v / 2) * (self.width / 2) + (u / 2),
+            _ => v * self.width + u,
+        }
+    }
+}
+
+impl Image<u8> {
+    pub(crate) fn get(&self, channel: usize, u: usize, v: usize) -> u8 {
+        let idx = self.get_helper(channel, u, v);
+        self.channels[channel][idx]
+    }
+}
+
+impl Image<u16> {
+    pub(crate) fn get(&self, channel: usize, u: usize, v: usize) -> u16 {
+        let idx = self.get_helper(channel, u, v);
+        u16::from_be_bytes(self.channels[0][idx..idx + 2].try_into().unwrap())
+    }
 }
 
 #[derive(Default)]
@@ -926,7 +1051,6 @@ trait VideoDecoder {
         T: Copy + Default,
     {
         // TODO: construct the filename for the decoded binstream
-        println!("[todel] bitstream len {}", bitstream.data.len());
         let data = if opts.bytestream_video_coder {
             bitstream.sample_stream_to_bytestream(opts.codec_id, 4)
         } else {
@@ -937,7 +1061,7 @@ trait VideoDecoder {
         let video = self.decode(&data, opts.codec_id)?;
         // skipping some MD5 computation
         debug!(
-            "decoded video = {}x{} ({} frames) bitdepth={} color={:?}",
+            "Decoded video = {}x{} ({} frames) bitdepth={} color={:?}",
             video.width(),
             video.height(),
             video.frame_count(),
@@ -975,8 +1099,7 @@ impl VideoDecoder for LibavcodecDecoder {
         use tempfile::NamedTempFile;
 
         let mut tmpfile = NamedTempFile::new().unwrap();
-        println!("{:?}", &tmpfile.path());
-        println!("len data {}", data.len());
+        println!("{:?}. bytestream length: {}", &tmpfile.path(), data.len());
         // TODO: use a buffer instead of writing to a tmpfile
         // Currently we write to disk because I can't figure out how to use ffmpeg API with a buffer
         // The tmpfile is not significant. It will be deleted when it goes out of scope
@@ -1002,8 +1125,8 @@ impl VideoDecoder for LibavcodecDecoder {
             let mut frame = frame::Video::empty();
             while decoder.receive_frame(&mut frame).is_ok() {
                 let image = Image::<T> {
-                    width: frame.width(),
-                    height: frame.height(),
+                    width: frame.width() as usize,
+                    height: frame.height() as usize,
                     channels: [
                         frame.data(0).to_owned(),
                         frame.data(1).to_owned(),

@@ -955,8 +955,8 @@ impl NalUnitType {
 /// Rbsp: Raw bit payload
 pub(crate) struct AtlasSequenceParameterSetRbsp {
     atlas_sequence_parameter_set_id: u8,
-    pub(crate) frame_width: u16,
-    pub(crate) frame_height: u16,
+    pub(crate) frame_width: u32,
+    pub(crate) frame_height: u32,
     pub(crate) geometry_2d_bitdepth_minus1: u8,
     pub(crate) geometry_3d_bitdepth_minus1: u8,
     pub(crate) log2_max_atlas_frame_order_cnt_lsb_minus_4: u8,
@@ -969,7 +969,7 @@ pub(crate) struct AtlasSequenceParameterSetRbsp {
     max_number_projections_minus1: usize,
     normal_axis_limits_quantization_enabled_flag: bool,
     normal_axis_max_delta_value_enabled_flag: bool,
-    patch_precedence_order_flag: bool,
+    pub(crate) patch_precedence_order_flag: bool,
     pub(crate) log2_patch_packing_block_size: u8,
     pub(crate) patch_size_quantizer_present_flag: bool,
     map_count_minus1: u8,
@@ -1033,8 +1033,8 @@ impl AtlasSequenceParameterSetRbsp {
     fn from_bitstream(bitstream: &Bitstream) -> Self {
         let mut asps = AtlasSequenceParameterSetRbsp::default();
         asps.atlas_sequence_parameter_set_id = bitstream.read_uvlc() as u8;
-        asps.frame_width = bitstream.read_uvlc() as u16;
-        asps.frame_height = bitstream.read_uvlc() as u16;
+        asps.frame_width = bitstream.read_uvlc() as u32;
+        asps.frame_height = bitstream.read_uvlc() as u32;
         asps.geometry_3d_bitdepth_minus1 = bitstream.read(5) as u8;
         asps.geometry_2d_bitdepth_minus1 = bitstream.read(5) as u8;
         asps.log2_max_atlas_frame_order_cnt_lsb_minus_4 = bitstream.read_uvlc() as u8;
@@ -1261,8 +1261,8 @@ pub(crate) struct AtlasFrameTileInformation {
 
     /// (12Dec22) Since single_tile_in_atlas_frame_flag is always true, these fields always have size 1.
     /// DIFF: changed to non-vec fields
-    col_width: u16,
-    row_height: u16,
+    col_width: u32,
+    row_height: u32,
     partition_pos: (usize, usize),
 }
 
@@ -1315,25 +1315,25 @@ impl AtlasFrameTileInformation {
     }
 
     #[inline]
-    pub(crate) fn set_partition_width(&mut self, index: usize, width: u16) {
+    pub(crate) fn set_partition_width(&mut self, index: usize, width: u32) {
         assert!(index == 0);
         self.col_width = width;
     }
 
     #[inline]
-    pub(crate) fn get_partition_width(&self, index: usize) -> u16 {
+    pub(crate) fn get_partition_width(&self, index: usize) -> u32 {
         assert!(index == 0);
         self.col_width
     }
 
     #[inline]
-    pub(crate) fn set_partition_height(&mut self, index: usize, height: u16) {
+    pub(crate) fn set_partition_height(&mut self, index: usize, height: u32) {
         assert!(index == 0);
         self.row_height = height;
     }
 
     #[inline]
-    pub(crate) fn get_partition_height(&self, index: usize) -> u16 {
+    pub(crate) fn get_partition_height(&self, index: usize) -> u32 {
         assert!(index == 0);
         self.row_height
     }
@@ -1343,8 +1343,8 @@ impl AtlasFrameTileInformation {
 /// Originally: PCCSEI
 #[derive(Default)]
 pub(crate) struct SeiRbsp {
-    sei_prefix: Vec<Box<dyn SEI>>,
-    sei_suffix: Vec<Box<dyn SEI>>,
+    sei_prefix: Vec<Sei>,
+    sei_suffix: Vec<Sei>,
 }
 
 #[derive(FromPrimitive, PartialEq, Clone, Copy, Debug)]
@@ -1413,9 +1413,8 @@ impl SeiRbsp {
         if nal_unit_type == NalUnitType::PrefixESEI || nal_unit_type == NalUnitType::PrefixNSEI {
             match payload_type {
                 SeiPayloadType::GeometrySmoothing => {
-                    let sei = Box::new(SeiGeometrySmoothing::from_bitstream(bitstream));
-                    sei_rbsp.sei_prefix.push(sei.clone());
-                    sei
+                    let sei = SeiGeometrySmoothing::from_bitstream(bitstream);
+                    sei_rbsp.sei_prefix.push(Sei::GeometrySmoothing(sei));
                 }
                 _ => unimplemented!("only geometry smoothing payload type is implemented"),
             };
@@ -1449,8 +1448,16 @@ impl SeiRbsp {
 
 /// Annex E: Supplemental Enhancement Information
 /// F.2.1. General SEI message syntax  <=> 7.3.8 Supplemental enhancement Information message
-trait SEI {
-    fn get_payload_type(&self) -> SeiPayloadType;
+enum Sei {
+    GeometrySmoothing(SeiGeometrySmoothing),
+}
+
+impl Sei {
+    fn get_payload_type(&self) -> SeiPayloadType {
+        match self {
+            Sei::GeometrySmoothing(_) => SeiPayloadType::GeometrySmoothing,
+        }
+    }
 }
 
 /// H.20.2.19 Geometry smoothing SEI message syntax
@@ -1503,12 +1510,6 @@ impl SeiGeometrySmoothing {
         }
 
         sei
-    }
-}
-
-impl SEI for SeiGeometrySmoothing {
-    fn get_payload_type(&self) -> SeiPayloadType {
-        SeiPayloadType::GeometrySmoothing
     }
 }
 
