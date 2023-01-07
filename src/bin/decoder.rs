@@ -84,8 +84,14 @@ fn decompress_video(args: Args) {
         bitstream::reader::SampleStreamV3CUnit::from_bitstream(&bitstream);
     // TODO[stat] bitstream_stat.incr_header(header_size);
 
-    let decoder_params = decoder::Params::new(args.compressed_stream_path, args.video_decoder_path)
-        .with_start_frame(args.start_frame);
+    let mut decoder_params =
+        decoder::Params::new(args.compressed_stream_path, args.video_decoder_path)
+            .with_start_frame(args.start_frame);
+    // FIXME(7Jan23): handle %04d in reconstructed data path properly...
+    if args.reconstructed_data_path.is_some() {
+        decoder_params =
+            decoder_params.with_reconstructed_data_path(args.reconstructed_data_path.unwrap());
+    }
     let decoder = decoder::Decoder::new(decoder_params);
 
     // IDEA (9Dec22): We can parallelize iterations of this loop, since the data is self-contained.
@@ -103,6 +109,8 @@ fn decompress_video(args: Args) {
         // context.atlas_index = atl_id as u8;
         let gof = decoder.decode(&mut context);
         // SKIP: a bunch of if caluses on metrics.
+
+        gof.write(&decoder.params.reconstructed_data_path);
     }
 }
 

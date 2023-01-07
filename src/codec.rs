@@ -1,8 +1,11 @@
-use std::ops::Add;
+use std::{ops::Add, path::Path};
 
-use crate::common::{
-    context::{AtlasContext, Context, TileContext},
-    ImageOccupancyMap, VideoAttribute, VideoGeometry, INTERMEDIATE_LAYER_INDEX,
+use crate::{
+    common::{
+        context::{AtlasContext, Context, TileContext},
+        ImageOccupancyMap, VideoAttribute, VideoGeometry, INTERMEDIATE_LAYER_INDEX,
+    },
+    writer::{Format, PlyWriter},
 };
 use cgmath::{Matrix3, Vector3};
 use log::trace;
@@ -18,7 +21,7 @@ type Matrix3D = Matrix3<usize>;
 pub(crate) struct PointSet3 {
     // NOTE: IF YOU UPDATE THIS STRUCT, dont forget to update resize and append point set.
     pub(crate) positions: Vec<Point3D>,
-    colors: Vec<Color3B>,
+    pub(crate) colors: Vec<Color3B>,
     colors16bit: Vec<Color16bit>,
     // boundary_point_types: Vec<u16>,
     point_patch_indexes: Vec<(usize, usize)>,
@@ -28,7 +31,7 @@ pub(crate) struct PointSet3 {
     // reflectances: Vec<u16>,
     // normals: Vec<Normal3D>,
     // with_normals: bool,
-    with_colors: bool,
+    pub(crate) with_colors: bool,
     // with_reflectances: bool,
 }
 
@@ -75,6 +78,7 @@ impl PointSet3 {
         self.point_patch_indexes.reserve(size);
     }
 
+    #[inline]
     /// add color to PointSet
     pub(crate) fn set_color(&mut self, index: usize, color: Color3B) {
         assert!(self.with_colors && index < self.colors.len());
@@ -108,14 +112,17 @@ pub struct GroupOfFrames {
 }
 
 impl GroupOfFrames {
-    fn load() -> bool {
+    pub fn load() -> bool {
         // TODO
         true
     }
 
-    fn write() -> bool {
-        // TODO
-        true
+    pub fn write(self, path: &Path) {
+        for (i, frame) in self.frames.into_iter().enumerate() {
+            let path = &path.join(format!("{:0>4}.ply", i));
+            dbg!(path);
+            PlyWriter::new(frame, Format::Ascii).write(path);
+        }
     }
 }
 
