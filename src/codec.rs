@@ -1,12 +1,13 @@
+use std::ops::Add;
+
 use crate::common::{
     context::{AtlasContext, Context, TileContext},
-    ImageOccupancyMap, VideoGeometry, INTERMEDIATE_LAYER_INDEX,
+    ImageOccupancyMap, VideoAttribute, VideoGeometry, INTERMEDIATE_LAYER_INDEX,
 };
-use cgmath::{Matrix3, Point3, Vector3};
+use cgmath::{Matrix3, Vector3};
 use log::trace;
 
 pub(crate) type Point3D = Vector3<u16>;
-type Vector3D = Vector3<usize>;
 type Color3B = Vector3<u8>;
 
 type Color16bit = Vector3<u16>;
@@ -32,6 +33,7 @@ pub(crate) struct PointSet3 {
 }
 
 impl PointSet3 {
+    #[inline]
     pub(crate) fn point_count(&self) -> usize {
         self.positions.len()
     }
@@ -40,7 +42,7 @@ impl PointSet3 {
     pub(crate) fn add_point(&mut self, position: Point3D) -> usize {
         self.positions.push(position);
         if self.with_colors {
-            self.colors.push(Color3B::new(0, 0, 0));
+            self.colors.push(Color3B::new(127, 127, 127));
             self.colors16bit.push(Color16bit::new(0, 0, 0));
         }
         self.point_patch_indexes.push((0, 0));
@@ -50,6 +52,7 @@ impl PointSet3 {
     /// set PointSet to use color
     pub(crate) fn add_colors(&mut self) {
         self.with_colors = true;
+        self.reserve(self.point_count());
     }
 
     pub(crate) fn append_point_set(&mut self, pointset: PointSet3) -> usize {
@@ -76,6 +79,26 @@ impl PointSet3 {
     pub(crate) fn set_color(&mut self, index: usize, color: Color3B) {
         assert!(self.with_colors && index < self.colors.len());
         self.colors[index] = color;
+    }
+
+    pub(crate) fn convert_yuv16_to_rgb8(&mut self) {
+        assert!(self.with_colors);
+        assert!(self.colors16bit.len() == self.point_count());
+        for (i, color16bit) in self.colors16bit.iter().enumerate() {
+            self.colors[i] = convert_yuv16_to_rgb8(color16bit);
+        }
+    }
+
+    pub(crate) fn copy_rgb16_to_rgb8(&mut self) {
+        assert!(self.with_colors);
+        assert!(self.colors16bit.len() == self.point_count());
+        for (i, color16bit) in self.colors16bit.iter().enumerate() {
+            self.colors[i] = Vector3 {
+                x: color16bit.x as u8,
+                y: color16bit.y as u8,
+                z: color16bit.z as u8,
+            };
+        }
     }
 }
 
@@ -210,6 +233,9 @@ pub(crate) fn generate_block_to_patch_from_occupancy_map_video(
 }
 
 /// Returns a PointSet3 of reconstructed frame and a vector of partitions
+///
+/// DIFF: calls color_point_cloud here, instead asking the caller to do it.
+/// So the resulting point cloud already contains attributes.
 pub(crate) fn generate_point_cloud(
     context: &Context,
     atlas: &AtlasContext,
@@ -218,18 +244,19 @@ pub(crate) fn generate_point_cloud(
     tile_index: usize,
     params: &GeneratePointCloudParams,
     is_decoder: bool,
+    attribute_count: u8,
 ) -> Option<(PointSet3, Vec<usize>)> {
     trace!("generate point cloud F = {} start", frame_index);
     assert!(atlas.geo_frames.len() > 0);
     let geo_video = &atlas.geo_frames[0];
-    let occupancy_map_video = &atlas.occ_frames;
     let block_to_patch_width = tile.width as usize / params.occupancy_resolution;
     let block_to_patch_height = tile.height as usize / params.occupancy_resolution;
     let map_count = params.map_count_minus1 as usize + 1;
 
     let mut reconstruct = PointSet3::default();
-    // don't need to add color here...
-    // reconstruct.add_colors();
+    if attribute_count > 0 {
+        reconstruct.add_colors();
+    }
 
     // most likely an overallocation but probably doesn't matter
     reconstruct.reserve(2 * tile.width as usize * tile.height as usize * tile.patches.len());
@@ -249,12 +276,11 @@ pub(crate) fn generate_point_cloud(
         tile.occupancy_map = vec![0; height * width];
         for v in 0..height {
             for u in 0..width {
-                tile.occupancy_map[v * width + u] =
-                    occupancy_map_video.get(frame_index).unwrap().get(
-                        0,
-                        (tile.left_top_in_frame.0 + u) / params.occupancy_precision,
-                        (tile.left_top_in_frame.1 + v) / params.occupancy_precision,
-                    );
+                tile.occupancy_map[v * width + u] = atlas.occ_frames.get(frame_index).unwrap().get(
+                    0,
+                    (tile.left_top_in_frame.0 + u) / params.occupancy_precision,
+                    (tile.left_top_in_frame.1 + v) / params.occupancy_precision,
+                );
             }
         }
     }
@@ -304,6 +330,10 @@ pub(crate) fn generate_point_cloud(
         "support for patchPrecedenceOrderFlag is not implemented yet"
     );
     // if decoder && patchPrecedenceOrderFlag, reverse the patch iterator
+
+    // DIFF: we don't set this back to tile.point_to_pixel
+    let mut point_to_pixel = vec![];
+
     for (patch_index, patch) in tile.patches.iter().enumerate() {
         trace!(
             "P{}/{}: 2D={:?}*{:?} 3D({},{},{})*({},{}) A={:?} Or={:?} P={} => {} AxisOfAdditionalPlane={}",
@@ -322,8 +352,6 @@ pub(crate) fn generate_point_cloud(
             reconstruct.point_count(),
             patch.axis_of_additional_plane,
         );
-
-        let mut point_to_pixel = vec![];
 
         for v0 in 0..patch.size_uv0.1 {
             for u0 in 0..patch.size_uv0.0 {
@@ -453,6 +481,19 @@ pub(crate) fn generate_point_cloud(
         unimplemented!("geometrySmoothing && !pbf not implemented")
     }
 
+    if attribute_count > 0 {
+        for i in 0..attribute_count as usize {
+            reconstruct = color_point_cloud(
+                reconstruct,
+                tile,
+                params,
+                &atlas.attr_frames[i],
+                &point_to_pixel,
+                context.get_vps().unwrap().multiple_map_streams_present_flag,
+            );
+        }
+    }
+
     Some((reconstruct, partition))
 }
 
@@ -500,4 +541,118 @@ fn generate_points(
         }
     }
     created_points
+}
+
+/// Color a point set with the attribute.
+/// DIFF: The reconstruct expected is
+fn color_point_cloud(
+    mut reconstruct: PointSet3,
+    tile: &TileContext,
+    params: &GeneratePointCloudParams,
+    video: &VideoAttribute,
+    point_to_pixel: &[Vector3<usize>],
+    multiple_streams: bool,
+) -> PointSet3 {
+    trace!("colorPointCloud start");
+    // we know that the point cloud has color
+    if reconstruct.point_count() == 0 {
+        return reconstruct;
+    }
+
+    if reconstruct.colors.len() < reconstruct.point_count() {
+        reconstruct
+            .colors
+            .resize_with(reconstruct.point_count(), || Vector3 { x: 0, y: 0, z: 0 });
+    }
+    assert!(reconstruct.colors.len() == reconstruct.positions.len());
+
+    let frame0 = video.get(0).unwrap();
+    let frame1 = video.get(1).unwrap();
+    let map_count = params.map_count_minus1 as usize + 1;
+
+    let point_count = if tile.use_raw_points_separate_video {
+        tile.total_number_of_regular_points
+    } else {
+        tile.total_number_of_regular_points // + tile.total_number_of_eom_points + tile.total_number_of_raw_points
+    };
+
+    trace!("pointcount = {}", point_count);
+    trace!(
+        "reconstruct.getPointCount() = {}",
+        reconstruct.point_count()
+    );
+    trace!("point_to_pixel size = {}", point_to_pixel.len());
+    trace!(
+        "pointLocalReconstruction = {:?}",
+        params.point_local_reconstruction
+    );
+    trace!(
+        "singleMapPixelInterleaving = {}",
+        params.single_map_pixel_interleaving
+    );
+    trace!(
+        "enhancedOccupancyMapCode = {:?}",
+        params.enhanced_occupancy_map
+    );
+    trace!("multipleStreams = {}", multiple_streams);
+    let shift = if params.multiple_streams {
+        tile.frame_index
+    } else {
+        tile.frame_index * map_count
+    };
+
+    for (i, location) in point_to_pixel.iter().enumerate() {
+        let Vector3 { x, y, z } = location.add(Vector3::new(
+            tile.left_top_in_frame.0,
+            tile.left_top_in_frame.1,
+            0,
+        ));
+        if params.single_map_pixel_interleaving {
+            unimplemented!("singleMapPixelInterleaving is not implemented yet");
+        } else if multiple_streams {
+            unimplemented!("multipleStreams is not implemented yet");
+        } else if z < map_count {
+            let frame = video.get(z + shift).unwrap();
+            for c in 0..3 {
+                reconstruct.colors16bit[i][c] = frame.get(c, x, y);
+            }
+        } else {
+            unimplemented!("color transfer weight? is not implemented yet");
+        }
+    }
+
+    // TODO: Implement color weight transfer here
+    // if (target.getPointCount() > 0) { ... }
+
+    if tile.use_raw_points_separate_video {
+        unimplemented!("rawPointsSeparateVideo is not implemented yet");
+    }
+
+    reconstruct
+}
+
+// https://softpixel.com/~cwright/programming/colorspace/yuv/
+fn convert_yuv16_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
+    // yuv16 to rgb8
+    let clamp = |x: f64| -> u8 {
+        if x < 0. {
+            0
+        } else if x > 255. {
+            255
+        } else {
+            x as u8
+        }
+    };
+
+    let Vector3 { x: y, y: u, z: v } = *color16;
+    let y = y as f64;
+    let u = u as f64;
+    let v = v as f64;
+    let r = y + 1.4075 * (v - 32768.);
+    let g = y - 0.3455 * (u - 32768.) - (0.7169 * (v - 32768.));
+    let b = y + 1.7790 * (u - 32768.);
+    let r = clamp((r / 65535. * 255.).floor());
+    let g = clamp((g / 65535. * 255.).floor());
+    let b = clamp((b / 65535. * 255.).floor());
+    Vector3 { x: r, y: g, z: b }
 }

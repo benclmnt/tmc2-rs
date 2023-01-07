@@ -250,8 +250,10 @@ impl Decoder {
 
             let occupancy_precision = sps.frame_width as usize / atlas_context.occ_frames.width();
             let mut reconstruct = PointSet3::default();
-            // DIFF: we assume only 1 attributes are ever.
-            let acc_tile_point_count = 0usize;
+            if ai.attribute_count > 0 {
+                reconstruct.add_colors();
+            }
+
             assert_eq!(
                 atlas_context
                     .get_frame_context(frame_idx)
@@ -310,7 +312,7 @@ impl Decoder {
                     tile.block_to_patch = block_to_patch;
                 }
 
-                let (mut tile_construct, partition) = {
+                let (tile_construct, _partition) = {
                     let mut frame_context = atlas_context.get_mut_frame_context(frame_idx);
                     let tile = frame_context.get_tile_mut(tile_idx);
                     generate_point_cloud(
@@ -321,6 +323,7 @@ impl Decoder {
                         tile_idx,
                         &gpc_params,
                         true,
+                        ai.attribute_count,
                     )
                     .unwrap()
                 };
@@ -329,23 +332,41 @@ impl Decoder {
                     unimplemented!("Multiple tiles not implemented")
                 }
 
-                if ai.attribute_count > 0 {
-                    reconstruct.add_colors();
-                }
-
-                for attr_idx in 0..ai.attribute_count {
-                    trace!(
-                        "start colorPointCloud attIdx = {}/{}",
-                        attr_idx,
-                        ai.attribute_count
-                    );
-                }
-
                 reconstruct.append_point_set(tile_construct);
             }
 
+            // post processing
+            // NOTE: atgl_index is always 0 when decoding. See how get_atlas_tile_layer_index is implemented. :)
+            let pp_sei_params =
+                self.new_generate_point_cloud_params(context, 0, occupancy_precision);
+            trace!(
+                "Post-Processing: postprocessSmoothing={} pbfEnableFlag={}",
+                self.params.attr_transfer_filter_type,
+                pp_sei_params.pbf.is_some()
+            );
+
+            if self.params.apply_geo_smoothing_type && pp_sei_params.geometry_smoothing.is_some() {
+                unimplemented!("Geometry smoothing not implemented")
+            }
+
+            if ai.attribute_count > 0 {
+                if self.params.apply_attr_smoothing_type && pp_sei_params.color_smoothing.is_some()
+                {
+                    unimplemented!("Color smoothing not implemented")
+                }
+
+                match atlas_context.attr_frames.get(0).unwrap().color_format() {
+                    ColorFormat::Rgb444 => reconstruct.copy_rgb16_to_rgb8(),
+                    ColorFormat::Unknown => unreachable!(),
+                    _ => reconstruct.convert_yuv16_to_rgb8(),
+                }
+            }
+
+            // SKIP: some checksum stuff
+
             gof.frames.push(reconstruct);
         }
+
         gof
     }
 

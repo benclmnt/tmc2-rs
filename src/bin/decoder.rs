@@ -102,6 +102,7 @@ fn decompress_video(args: Args) {
         // context.atlas_contexts[i].allocate_video_frames(&mut context);
         // context.atlas_index = atl_id as u8;
         let gof = decoder.decode(&mut context);
+        // SKIP: a bunch of if caluses on metrics.
     }
 }
 
