@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Write;
+use std::io::BufWriter;
 use std::path::Path;
 
 use crate::codec::PointSet3;
@@ -23,12 +23,16 @@ impl PlyWriter {
     }
 
     pub fn write(&self, path: &Path) {
-        let mut output = File::create(path).unwrap();
-        self.write_header(&mut output);
-        self.write_body(&mut output);
+        let output = File::create(path).unwrap();
+        let mut w = BufWriter::new(output);
+        self.write_header(&mut w);
+        self.write_body(&mut w);
     }
 
-    fn write_header(&self, file: &mut File) {
+    fn write_header<P>(&self, file: &mut P)
+    where
+        P: std::io::Write,
+    {
         writeln!(file, "ply");
         match self.format {
             Format::Ascii => {
@@ -55,7 +59,10 @@ impl PlyWriter {
         writeln!(file, "end_header");
     }
 
-    fn write_body(&self, file: &mut File) {
+    fn write_body<P>(&self, file: &mut P)
+    where
+        P: std::io::Write,
+    {
         for i in 0..self.pc.point_count() {
             let pos = &self.pc.positions[i];
             write!(file, "{} {} {}", pos.x, pos.y, pos.z);

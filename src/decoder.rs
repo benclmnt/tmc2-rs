@@ -15,9 +15,9 @@ use crate::{
 use super::common::context::Context;
 use log::{debug, trace};
 use num_enum::FromPrimitive;
-use std::cell::RefCell;
-use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::{cell::RefCell, fs::File};
+use std::{io::Write, marker::PhantomData};
 #[derive(Debug, Default)]
 pub struct Params {
     pub start_frame: usize,
@@ -91,7 +91,6 @@ impl Decoder {
         let asps = context.get_atlas_sequence_parameter_set(0);
         let frame_count = atlas_context.frame_count();
         let ptl = &sps.profile_tier_level;
-        let map_count = sps.map_count_minus1 + 1;
         let geometry_bitdepth = gi.geometry_2d_bitdepth_minus1 + 1;
 
         // TODO: maybe move this to context struct?
@@ -100,7 +99,7 @@ impl Decoder {
             && sps.auxiliary_video_present_flag;
         assert!(!has_aux_data);
 
-        // skip set_consitant_four_cc_code(context, 0);
+        // TODO: set_consitant_four_cc_code(context, 0);
         let occupancy_codec_id = CodecId::from(oi.occupancy_codec_id);
         let geometry_codec_id = CodecId::from(gi.geometry_codec_id);
         let path_prefix = format!(
@@ -172,8 +171,10 @@ impl Decoder {
                     },
                 )
                 .unwrap();
+
             atlas_context.geo_frames.push(geo_video);
             assert!(!gi.geometry_msb_align_flag);
+            // TODO: convert bitdepth
             // context.getVideoGeometryMultiple(0).convertBitdepth( geometry_bitdepth, gi.getGeometry2DBitdepthMinus1() + 1, gi.geometry_msb_align_flag );
         }
 
@@ -224,6 +225,7 @@ impl Decoder {
                             },
                         )
                         .unwrap();
+
                     atlas_context.attr_frames.push(attr_video);
 
                     if has_aux_data {
@@ -680,6 +682,7 @@ impl Decoder {
             geometry_bitdepth_3d: gi.geometry_3d_coordinates_bitdepth_minus1 + 1,
             ..Default::default()
         };
+        assert!(!params.multiple_streams, "multiple streams not supported");
 
         if self.params.apply_geo_smoothing_type
             && context.is_sei_present(
@@ -927,11 +930,12 @@ impl Patch {
     /// Coordinates might be truncated values.
     #[inline]
     pub(crate) fn generate_point(&self, u: usize, v: usize, depth: u16) -> Point3D {
-        Point3D {
-            x: self.generate_normal_coordinate(depth) as u16,
-            y: (u * self.level_of_detail.0 + self.uv1.0) as u16,
-            z: (v * self.level_of_detail.1 + self.uv1.1) as u16,
-        }
+        let mut point = Point3D::new(0, 0, 0);
+        let (normal, tangent, bitangent) = self.axes;
+        point[normal as usize] = self.generate_normal_coordinate(depth) as u16;
+        point[tangent as usize] = (u * self.level_of_detail.0 + self.uv1.0) as u16;
+        point[bitangent as usize] = (v * self.level_of_detail.1 + self.uv1.1) as u16;
+        point
     }
 
     #[inline]
@@ -946,7 +950,7 @@ impl Patch {
 }
 
 #[derive(Default, Debug, Clone, Copy)]
-pub(crate) enum CodecId {
+pub enum CodecId {
     H264,
     #[default]
     H265,
@@ -1009,7 +1013,7 @@ where
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub(crate) struct Image<T> {
     // can move this field to Video<T>?
     width: usize,
@@ -1029,6 +1033,24 @@ impl<T> Image<T> {
             _ => v * self.width + u,
         }
     }
+
+    /// This is an internal function for debugging purposes. Please don't rely on it.
+    fn write(&self, filename: &str) {
+        let mut file = File::create(filename).unwrap();
+        let mut buf = Vec::new();
+        // file.write_all(
+        //     format!(
+        //         "YUV4MPEG2 W{} H{} F30:1 Ip A0:0 C420mpeg2 XYSCSS=420MPEG2\n",
+        //         self.width, self.height
+        //     )
+        //     .as_bytes(),
+        // )
+        // .unwrap();
+        for channel in 0..3 {
+            buf.extend_from_slice(&self.channels[channel]);
+        }
+        file.write_all(&buf).unwrap();
+    }
 }
 
 impl Image<u8> {
@@ -1039,9 +1061,16 @@ impl Image<u8> {
 }
 
 impl Image<u16> {
+    /// We store image data (channels) internally as u8 slice. However, we want to be able to access as if it is stored as u16 slice.
+    /// This function is used to achieve that.
     pub(crate) fn get(&self, channel: usize, u: usize, v: usize) -> u16 {
         let idx = self.get_helper(channel, u, v);
-        u16::from_be_bytes(self.channels[0][idx..idx + 2].try_into().unwrap())
+        // NOTE(21Jan23): we use from_ne_bytes here because libavcodec (the video decoder we use from ffmpeg) decodes to native endian
+        u16::from_ne_bytes(
+            self.channels[channel][2 * idx..2 * idx + 2]
+                .try_into()
+                .unwrap(),
+        )
     }
 }
 
@@ -1107,7 +1136,7 @@ trait VideoDecoder {
     }
 }
 
-struct LibavcodecDecoder {}
+pub struct LibavcodecDecoder {}
 
 impl VideoDecoder for LibavcodecDecoder {
     fn decode<T>(&mut self, data: &[u8], codec_id: CodecId) -> Result<Video<T>, ()>
@@ -1115,8 +1144,7 @@ impl VideoDecoder for LibavcodecDecoder {
         T: Copy + Default,
     {
         extern crate ffmpeg_next as ffmpeg;
-        use ffmpeg::{codec, decoder, format, frame, Packet};
-        use std::io::Write;
+        use ffmpeg::{codec, codec::context::Context, decoder, format, frame, Packet};
         use tempfile::NamedTempFile;
 
         let mut tmpfile = NamedTempFile::new().unwrap();
@@ -1132,7 +1160,14 @@ impl VideoDecoder for LibavcodecDecoder {
             _ => codec::Id::HEVC,
         };
 
-        let mut decoder = decoder::new()
+        let mut decctx = Context::new();
+        unsafe {
+            let ptr = decctx.as_mut_ptr();
+            (*ptr).pix_fmt = format::Pixel::YUV420P.into();
+        }
+
+        let mut decoder = decctx
+            .decoder()
             .open_as(decoder::find(codec))
             .unwrap()
             .video()

@@ -198,7 +198,6 @@ pub(crate) fn generate_block_to_patch_from_occupancy_map_video(
     occupancy_precision: usize,
 ) -> Vec<usize> {
     let patches = &tile.patches;
-    let patch_count = patches.len();
     let block_to_patch_width = tile.width / occupancy_resolution as u32;
     let block_to_patch_height = tile.height / occupancy_resolution as u32;
     let block_count = block_to_patch_width * block_to_patch_height;
@@ -382,7 +381,7 @@ pub(crate) fn generate_point_cloud(
                         if params.pbf.is_some() {
                             unimplemented!("pbfEnableFlag is not implemented yet");
                         } else {
-                            let occupancy = tile.occupancy_map[v * tile.width as usize + u];
+                            let occupancy = tile.occupancy_map[y * tile.width as usize + x];
                             if occupancy == 0 {
                                 continue;
                             }
@@ -456,6 +455,7 @@ pub(crate) fn generate_point_cloud(
                                         z: if i < 2 {
                                             i
                                         } else {
+                                            // should be unreachable if created_points.len() is always 2.
                                             INTERMEDIATE_LAYER_INDEX + 1
                                         },
                                     })
@@ -519,7 +519,9 @@ fn generate_points(
     let point0 = if params.pbf.is_some() {
         unimplemented!("pbfEnableFlag is not implemented yet");
     } else {
-        patch.generate_point(u, v, frame0.get(0, x, y))
+        // DIFF(21Jan23): In this function, we divide the depth by 4 because libavcodec decodes the geometry video as 10-bit (YUV420p10LE), but the reference implementation decodes the geometry video as 8-bit
+        // Note that it should still stored as Video<u16> (yeah reference impl is strange i know). We cannot change to Video<u8> otherwise the metadata (indices etc) stored in the atlas will point to out-of-bounds data.
+        patch.generate_point(u, v, frame0.get(0, x, y) / 4)
     };
     created_points.push(point0);
     if params.single_map_pixel_interleaving {
@@ -533,15 +535,17 @@ fn generate_points(
             } else {
                 geo_video.get(video_frame_index + 1).unwrap()
             };
+            // NOTE: see above for the reason why we divide the depth by 4
+            let d1 = frame1.get(0, x, y) / 4 as u16;
             let point1 = if params.absolute_d1 {
-                patch.generate_point(u, v, frame0.get(0, x, y))
+                patch.generate_point(u, v, d1)
             } else if patch.projection_mode == 0 {
                 let mut point1 = point0.clone();
-                point1[patch.axes.0 as usize] += frame1.get(0, x, y) as u16;
+                point1[patch.axes.0 as usize] += d1;
                 point1
             } else {
                 let mut point1 = point0.clone();
-                point1[patch.axes.0 as usize] -= frame1.get(0, x, y) as u16;
+                point1[patch.axes.0 as usize] -= d1;
                 point1
             };
             created_points.push(point1);
@@ -551,7 +555,6 @@ fn generate_points(
 }
 
 /// Color a point set with the attribute.
-/// DIFF: The reconstruct expected is
 fn color_point_cloud(
     mut reconstruct: PointSet3,
     tile: &TileContext,
@@ -561,7 +564,6 @@ fn color_point_cloud(
     multiple_streams: bool,
 ) -> PointSet3 {
     trace!("colorPointCloud start");
-    // we know that the point cloud has color
     if reconstruct.point_count() == 0 {
         return reconstruct;
     }
@@ -635,10 +637,16 @@ fn color_point_cloud(
         unimplemented!("rawPointsSeparateVideo is not implemented yet");
     }
 
+    if tile.use_raw_points_separate_video {
+        unimplemented!("rawPointsSeparateVideo is not implemented yet");
+    }
+
     reconstruct
 }
 
-// https://softpixel.com/~cwright/programming/colorspace/yuv/
+/// Convert YUV10bit to RGB8bit
+///
+/// Modified from https://softpixel.com/~cwright/programming/colorspace/yuv/
 fn convert_yuv16_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
     // yuv16 to rgb8
     let clamp = |x: f64| -> u8 {
@@ -651,15 +659,18 @@ fn convert_yuv16_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
         }
     };
 
+    let offset = 512.;
+    let scale = 1023.;
+
     let Vector3 { x: y, y: u, z: v } = *color16;
     let y = y as f64;
     let u = u as f64;
     let v = v as f64;
-    let r = y + 1.4075 * (v - 32768.);
-    let g = y - 0.3455 * (u - 32768.) - (0.7169 * (v - 32768.));
-    let b = y + 1.7790 * (u - 32768.);
-    let r = clamp((r / 65535. * 255.).floor());
-    let g = clamp((g / 65535. * 255.).floor());
-    let b = clamp((b / 65535. * 255.).floor());
+    let r = y + 1.4075 * (v - offset);
+    let g = y - 0.3455 * (u - offset) - (0.7169 * (v - offset));
+    let b = y + 1.7790 * (u - offset);
+    let r = clamp((r / scale * 255.).floor());
+    let g = clamp((g / scale * 255.).floor());
+    let b = clamp((b / scale * 255.).floor());
     Vector3 { x: r, y: g, z: b }
 }
