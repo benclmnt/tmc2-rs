@@ -14,35 +14,35 @@ pub struct Position {
     pub bits: u8,
 }
 
-pub struct GofStat {
-    pub v3c_unit_size: Vec<usize>,
-    pub video_bin_size: Vec<usize>,
-}
+// pub struct GofStat {
+//     pub v3c_unit_size: Vec<usize>,
+//     pub video_bin_size: Vec<usize>,
+// }
 
-pub struct Stat {
-    pub header: usize,
-    pub bitstream_gof_stat: Vec<GofStat>,
-}
+// pub struct Stat {
+//     pub header: usize,
+//     pub bitstream_gof_stat: Vec<GofStat>,
+// }
 
-impl Stat {
-    pub fn new() -> Self {
-        Self {
-            header: 0,
-            bitstream_gof_stat: Vec::new(),
-        }
-    }
+// impl Stat {
+//     pub fn new() -> Self {
+//         Self {
+//             header: 0,
+//             bitstream_gof_stat: Vec::new(),
+//         }
+//     }
 
-    pub fn incr_header(&mut self, size: usize) {
-        self.header += size;
-    }
+//     pub fn incr_header(&mut self, size: usize) {
+//         self.header += size;
+//     }
 
-    pub fn new_gof(&mut self) {
-        self.bitstream_gof_stat.push(GofStat {
-            v3c_unit_size: Vec::new(),
-            video_bin_size: Vec::new(),
-        });
-    }
-}
+//     pub fn new_gof(&mut self) {
+//         self.bitstream_gof_stat.push(GofStat {
+//             v3c_unit_size: Vec::new(),
+//             video_bin_size: Vec::new(),
+//         });
+//     }
+// }
 
 #[derive(Default, Clone)]
 pub struct Bitstream {
@@ -153,7 +153,7 @@ impl Bitstream {
     }
 
     pub fn peek(&self, bits: u8) -> u32 {
-        let pos = self.position.borrow().clone();
+        let pos = *self.position.borrow();
         let res = self.read(bits);
         // rewind the cursor
         *self.position.borrow_mut() = pos;
@@ -178,6 +178,7 @@ impl Bitstream {
         (1 << leading_zeros) - 1 + self.read(leading_zeros)
     }
 
+    #[allow(clippy::neg_multiply)]
     fn read_svlc(&self) -> i32 {
         let x = self.read_uvlc();
         if x & 1 == 1 {
@@ -211,6 +212,7 @@ impl VideoBitstream {
 
     /// Sample stream is used in the final bitstream. However, the decoder only understands the bytestream
     /// so this fn is used in PCCDecoder before being send to the `VideoDecoder::decode`
+    #[allow(clippy::same_item_push)]
     pub fn sample_stream_to_bytestream(&self, codec_id: CodecId, precision: usize) -> Vec<u8> {
         // let emulation_prevention_bytes = false;
         // let change_start_code_size = true;
@@ -219,7 +221,7 @@ impl VideoBitstream {
         let mut size_start_code = 4;
         let mut start_index = 0;
         // let mut end_index = 0;
-        let mut new_frame = true;
+        let mut _new_frame = true;
         let mut result = Vec::with_capacity(self.data.len());
 
         loop {
@@ -246,7 +248,7 @@ impl VideoBitstream {
             start_index = end_index;
             if start_index + precision < self.data.len() {
                 let use_long_start_code: bool;
-                new_frame = false;
+                _new_frame = false;
                 match codec_id {
                     CodecId::H264 => use_long_start_code = true,
                     CodecId::H265 => {
@@ -256,9 +258,9 @@ impl VideoBitstream {
                         //   nalu.m_nuhLayerId = bs.read(6);                 // nuh_layer_id
                         //   nalu.m_temporalId = bs.read(3) - 1;             // nuh_temporal_id_plus1
                         let nalu_type = (self.data[start_index + precision] & 126) >> 1;
-                        use_long_start_code = new_frame || (nalu_type >= 32 && nalu_type < 41);
+                        use_long_start_code = _new_frame || (32..41).contains(&nalu_type);
                         if nalu_type < 12 {
-                            new_frame = true;
+                            _new_frame = true;
                         }
                     }
                     CodecId::H266 => {
@@ -269,9 +271,9 @@ impl VideoBitstream {
                         //   nalu.m_nalUnitType        = (NalUnitType) bs.read(5);   // nal_unit_type
                         //   nalu.m_temporalId         = bs.read(3) - 1;             // nuh_temporal_id_plus1
                         let nalu_type = (self.data[start_index + precision + 1] & 248) >> 3;
-                        use_long_start_code = new_frame || (nalu_type >= 12 && nalu_type < 20);
+                        use_long_start_code = _new_frame || (12..20).contains(&nalu_type);
                         if nalu_type < 12 {
-                            new_frame = true;
+                            _new_frame = true;
                         }
                     }
                 }

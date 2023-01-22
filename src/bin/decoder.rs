@@ -79,8 +79,8 @@ fn decompress_video(args: Args) {
     // TODO[checks] bitstream.computeMD5()
     // TODO[stat] (9Dec22): Do everything related to bitstream_stat
     // bitstream_stat.header = bitstream.size()
-    let frame_number = args.start_frame;
-    let (mut ssvu, header_size) =
+    let _frame_number = args.start_frame;
+    let (mut ssvu, _header_size) =
         bitstream::reader::SampleStreamV3CUnit::from_bitstream(&bitstream);
     // TODO[stat] bitstream_stat.incr_header(header_size);
 

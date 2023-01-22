@@ -37,7 +37,7 @@ pub struct Params {
     pixel_deinterleaving_type: bool,
     point_local_reconstruction_type: bool,
     reconstruction_eom_type: bool,
-    duplicated_point_removal_type: bool,
+    _duplicated_point_removal_type: bool,
     reconstruct_raw_type: bool,
     apply_geo_smoothing_type: bool,
     apply_attr_smoothing_type: bool,
@@ -102,7 +102,7 @@ impl Decoder {
         // TODO: set_consitant_four_cc_code(context, 0);
         let occupancy_codec_id = CodecId::from(oi.occupancy_codec_id);
         let geometry_codec_id = CodecId::from(gi.geometry_codec_id);
-        let path_prefix = format!(
+        let _path_prefix = format!(
             "{:?}_dec_GOF{}",
             &self
                 .params
@@ -134,9 +134,6 @@ impl Decoder {
                     bytestream_video_coder: true,
                     output_bitdepth: 8,
                     keep_intermediate_files: self.params.keep_intermediate_files,
-                    patch_color_subsampling: false,
-                    inverse_color_space_config: None,
-                    color_space_conversion_path: None,
                 },
             )
             .unwrap();
@@ -165,9 +162,6 @@ impl Decoder {
                         bytestream_video_coder: true,
                         output_bitdepth: geometry_bitdepth,
                         keep_intermediate_files: self.params.keep_intermediate_files,
-                        patch_color_subsampling: false,
-                        inverse_color_space_config: None,
-                        color_space_conversion_path: None,
                     },
                 )
                 .unwrap();
@@ -219,9 +213,6 @@ impl Decoder {
                                 bytestream_video_coder: true,
                                 output_bitdepth: attribute_bitdepth,
                                 keep_intermediate_files: self.params.keep_intermediate_files,
-                                patch_color_subsampling: false,
-                                inverse_color_space_config: None,
-                                color_space_conversion_path: None,
                             },
                         )
                         .unwrap();
@@ -317,12 +308,12 @@ impl Decoder {
                 let (tile_construct, _partition) = {
                     let mut frame_context = atlas_context.get_mut_frame_context(frame_idx);
                     let tile = frame_context.get_tile_mut(tile_idx);
+                    tile.frame_index = frame_idx;
+                    tile.tile_index = tile_idx;
                     generate_point_cloud(
                         context,
                         &atlas_context,
                         tile,
-                        frame_idx,
-                        tile_idx,
                         &gpc_params,
                         true,
                         ai.attribute_count,
@@ -358,7 +349,7 @@ impl Decoder {
                 }
 
                 match atlas_context.attr_frames.get(0).unwrap().color_format() {
-                    ColorFormat::Rgb444 => reconstruct.copy_rgb16_to_rgb8(),
+                    ColorFormat::_Rgb444 => reconstruct.copy_rgb16_to_rgb8(),
                     ColorFormat::Unknown => unreachable!(),
                     _ => reconstruct.convert_yuv16_to_rgb8(),
                 }
@@ -410,7 +401,7 @@ impl Decoder {
                 Self::set_tile_size_and_location(context, frame_index as usize, afps_id as usize)
             } else {
                 unreachable!("Looks like the if-clause will always evaluate to true");
-                AtlasFrameContext::default()
+                // AtlasFrameContext::default()
             };
 
             trace!("create_patch_frame_data_structure tile {}", atgl_idx);
@@ -444,14 +435,14 @@ impl Decoder {
             let patch_count = atgdu.patch_information_data.len();
             afc.title_frame_context = TileContext {
                 frame_index: frame_index as usize,
-                atlas_frame_order_count_val: atlu.atlas_frame_order_count_val,
-                atlas_frame_order_count_msb: atlu.atlas_frame_order_count_msb,
+                _atlas_frame_order_count_val: atlu.atlas_frame_order_count_val,
+                _atlas_frame_order_count_msb: atlu.atlas_frame_order_count_msb,
                 tile_index: tile_index as usize,
-                atl_index: atgl_idx,
+                _atl_index: atgl_idx,
                 use_raw_points_separate_video: sps.auxiliary_video_present_flag
                     && asps.auxiliary_video_enabled_flag,
-                raw_patch_enabled_flag: asps.raw_patch_enabled_flag,
-                log2_patch_quantizer_size: ath.patch_size_info_quantizer,
+                _raw_patch_enabled_flag: asps.raw_patch_enabled_flag,
+                _log2_patch_quantizer_size: ath.patch_size_info_quantizer,
                 patches: Vec::with_capacity(patch_count),
                 ..afc.title_frame_context
             };
@@ -509,7 +500,7 @@ impl Decoder {
                             } else {
                                 (pdu.size_2d_minus1.0 + 1, pdu.size_2d_minus1.1 + 1)
                             },
-                            size_2d_in_pixel: if asps.patch_size_quantizer_present_flag {
+                            _size_2d_in_pixel: if asps.patch_size_quantizer_present_flag {
                                 (
                                     pdu.size_2d_minus1.0 * (1 << ath.patch_size_info_quantizer.0),
                                     pdu.size_2d_minus1.1 * (1 << ath.patch_size_info_quantizer.1),
@@ -549,13 +540,13 @@ impl Decoder {
                     PatchType::Skip => {
                         unreachable!("skip patch should not be in bitstream");
                     }
-                    PatchType::Raw => {
+                    PatchType::_Raw => {
                         unimplemented!("raw patch not implemented");
                     }
-                    PatchType::Eom => {
+                    PatchType::_Eom => {
                         unimplemented!("eom patch not implemented");
                     }
-                    PatchType::End => {
+                    PatchType::_End => {
                         break;
                     }
                     _ => {
@@ -598,7 +589,7 @@ impl Decoder {
     /// (16Dec22) Although it seems redundant, this function will be useful once we implement multi-tile in a frame
     pub(crate) fn set_tile_size_and_location(
         context: &mut Context,
-        frame_index: usize,
+        _frame_index: usize,
         afps_index: usize,
     ) -> AtlasFrameContext {
         let afps = context.get_atlas_frame_parameter_set(afps_index);
@@ -619,8 +610,8 @@ impl Decoder {
 
         let afc = if afti_single_tile_in_atlas_frame_flag {
             AtlasFrameContext {
-                frame_width,
-                frame_height,
+                _frame_width: frame_width,
+                _frame_height: frame_height,
                 num_tiles_in_atlas_frame: 1,
                 title_frame_context: TileContext {
                     width: frame_width,
@@ -650,18 +641,17 @@ impl Decoder {
         occupancy_precision: usize,
     ) -> codec::GeneratePointCloudParams {
         let sps = context.get_vps().expect("VPS not found");
-        let oi = &sps.occupancy_information;
         let gi = &sps.geometry_information;
         let asps = context.get_atlas_sequence_parameter_set(0);
-        let ptl = &sps.profile_tier_level;
+        let _ptl = &sps.profile_tier_level;
 
-        let mut params = codec::GeneratePointCloudParams {
+        let params = codec::GeneratePointCloudParams {
             occupancy_resolution: 1 << asps.log2_patch_packing_block_size,
             occupancy_precision,
             enable_size_quantization: asps.patch_size_quantizer_present_flag,
             absolute_d1: sps.map_count_minus1 == 0 || sps.map_absolute_coding_enable_flag[1],
             multiple_streams: sps.multiple_map_streams_present_flag,
-            surface_thickness: asps.vpcc_extension.surface_thickness_minus1 + 1,
+            _surface_thickness: asps.vpcc_extension.surface_thickness_minus1 + 1,
             remove_duplicate_points: self.params.point_local_reconstruction_type
                 && asps.plr_enabled_flag,
             map_count_minus1: sps.map_count_minus1,
@@ -674,12 +664,12 @@ impl Decoder {
                 && asps.eom_patch_enabled_flag
             {
                 Some(EomParams {
-                    fix_bitcount: asps.eom_fix_bit_count_minus1 + 1,
+                    _fix_bitcount: asps.eom_fix_bit_count_minus1 + 1,
                 })
             } else {
                 None
             },
-            geometry_bitdepth_3d: gi.geometry_3d_coordinates_bitdepth_minus1 + 1,
+            _geometry_bitdepth_3d: gi.geometry_3d_coordinates_bitdepth_minus1 + 1,
             ..Default::default()
         };
         assert!(!params.multiple_streams, "multiple streams not supported");
@@ -723,9 +713,9 @@ enum PatchType {
     Inter,
     Merge,
     Skip,
-    Raw,
-    Eom,
-    End,
+    _Raw,
+    _Eom,
+    _End,
     Error,
 }
 
@@ -766,12 +756,11 @@ pub(crate) enum PatchOrientation {
 /// Originally PCCPatch
 #[derive(Default, Clone)]
 pub(crate) struct Patch {
-    patch_index: usize,
-    original_index: usize,
-    frame_index: usize,
-    tile_index: usize,
-    index_in_frame: usize,
-
+    // patch_index: usize,
+    // original_index: usize,
+    // frame_index: usize,
+    // tile_index: usize,
+    // index_in_frame: usize,
     /// u1: tangential shift
     /// v1: bitangential shift
     pub(crate) uv1: (usize, usize),
@@ -780,14 +769,13 @@ pub(crate) struct Patch {
     pub(crate) d1: usize,
     /// size for depth
     size_d: usize,
-    /// size D pixel
-    size_d_pixel: usize,
-
+    // /// size D pixel
+    // size_d_pixel: usize,
     /// location in packed image (n * occupancy_resolution)
     pub(crate) uv0: (usize, usize),
     /// size of occupancy map (n * occupancy resolution)
     pub(crate) size_uv0: (usize, usize),
-    size_2d_in_pixel: (usize, usize),
+    _size_2d_in_pixel: (usize, usize),
     pub(crate) occupancy_resolution: usize,
 
     /// (LodScaleX, LodScaleYIdc)
@@ -797,50 +785,48 @@ pub(crate) struct Patch {
     /// x: normal axis, y: tangent axis, z: bitangent axis
     pub(crate) axes: (u8, u8, u8),
     pub(crate) axis_of_additional_plane: u8,
-    depth: (i16, i16),
-    /// occupancy map
-    occupancy: Vec<bool>,
-    /// view_id in 0..=5
-    view_id: u8,
-    /// index of matched patch from pre-frame patch
-    best_match_idx: i32,
-    ref_atlas_frame_idx: usize,
-    pred_type: usize,
+    // depth: (i16, i16),
+    // /// occupancy map
+    // occupancy: Vec<bool>,
+    // /// view_id in 0..=5
+    // view_id: u8,
+    // /// index of matched patch from pre-frame patch
+    // best_match_idx: i32,
+    // ref_atlas_frame_idx: usize,
+    // pred_type: usize,
     // /// Enhance delta depth
     // depth_eom: Vec<i16>,
     // /// for surface separation
     // depth_0pc_idx: Vec<i64>,
     /// patch orientation in canvas atlas
     pub(crate) patch_orientation: PatchOrientation,
-
     // point_local_reconstruction_lvl: u8,
     // point_local_reconstruction_mode_by_patch: u8,
     // point_local_reconstruction_mode_by_block: Vec<u8>,
 
     // cur_gpa_patch_data: GPAPatchData,
     // pre_gpa_patch_data: GPAPatchData,
-    is_global_patch: bool,
-
-    d0_count: usize,
-    eom_count: usize,
-    eom_and_d1_count: usize,
-    patch_type: u8,
-    is_roi_patch: bool,
-    roi_index: usize,
-    /// patch index
-    index_copy: usize,
+    // is_global_patch: bool,
+    // d0_count: usize,
+    // eom_count: usize,
+    // eom_and_d1_count: usize,
+    // patch_type: u8,
+    // is_roi_patch: bool,
+    // roi_index: usize,
+    // /// patch index
+    // index_copy: usize,
     // bounding_box: Int16Box3D,
-    /// size of the depth map (width + 2 border)
-    border: i16,
-    depth_map_width: i16,
-    depth_map_height: i16,
+    // /// size of the depth map (width + 2 border)
+    // border: i16,
+    // depth_map_width: i16,
+    // depth_map_height: i16,
 
-    /// list of neighboring patches' index
-    neighboring_patches: Vec<usize>,
-    depth_map: Vec<i16>,
-    occupancy_map: Vec<u8>,
-    /// 3D points created from borders of the patch
-    border_points: Vec<Point3D>,
+    // /// list of neighboring patches' index
+    // neighboring_patches: Vec<usize>,
+    // depth_map: Vec<i16>,
+    // occupancy_map: Vec<u8>,
+    // /// 3D points created from borders of the patch
+    // border_points: Vec<Point3D>,
 }
 
 impl Patch {
@@ -1035,6 +1021,7 @@ impl<T> Image<T> {
     }
 
     /// This is an internal function for debugging purposes. Please don't rely on it.
+    #[allow(dead_code)]
     fn write(&self, filename: &str) {
         let mut file = File::create(filename).unwrap();
         let mut buf = Vec::new();
@@ -1080,9 +1067,9 @@ struct VideoDecoderOptions {
     bytestream_video_coder: bool,
     output_bitdepth: u8,
     keep_intermediate_files: bool,
-    patch_color_subsampling: bool,
-    inverse_color_space_config: Option<PathBuf>,
-    color_space_conversion_path: Option<PathBuf>,
+    // patch_color_subsampling: bool,
+    // inverse_color_space_config: Option<PathBuf>,
+    // color_space_conversion_path: Option<PathBuf>,
     // upsampling_filter: usize,
 }
 
@@ -1157,7 +1144,9 @@ impl VideoDecoder for LibavcodecDecoder {
 
         // transform to ffmpeg's codec id
         let codec = match codec_id {
-            _ => codec::Id::HEVC,
+            CodecId::H264 => codec::Id::H264,
+            CodecId::H265 => codec::Id::HEVC,
+            CodecId::H266 => codec::Id::VVC,
         };
 
         let mut decctx = Context::new();

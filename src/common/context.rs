@@ -1,7 +1,6 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::hash_map::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
 
 use crate::bitstream::{
     reader,
@@ -12,8 +11,7 @@ use crate::bitstream::{
     VideoBitstream, VideoType,
 };
 use crate::common::{VideoAttribute, VideoGeometry, VideoOccupancyMap};
-use crate::decoder::{Image, Patch, Video};
-use cgmath::Vector3;
+use crate::decoder::Patch;
 
 pub type Context = RawContext;
 
@@ -340,11 +338,11 @@ impl AtlasContext {
 #[derive(Clone)]
 pub(crate) struct AtlasFrameContext {
     // frame_index: usize,
-    pub frame_width: u32,
-    pub frame_height: u32,
+    pub _frame_width: u32,
+    pub _frame_height: u32,
     pub num_tiles_in_atlas_frame: u16, // (13Dec22) u16 because it is always 1. Originally usize
     /// (12Dec22) Always true
-    pub single_partition_per_tile: bool,
+    pub _single_partition_per_tile: bool,
     // uniform_partition_spacing: bool,
     // num_partition_cols: usize,
     // num_partition_rows: usize,
@@ -373,10 +371,10 @@ impl Default for AtlasFrameContext {
     fn default() -> Self {
         Self {
             // frame_index: 0,
-            frame_width: 0,
-            frame_height: 0,
+            _frame_width: 0,
+            _frame_height: 0,
             num_tiles_in_atlas_frame: 0,
-            single_partition_per_tile: true,
+            _single_partition_per_tile: true,
             title_frame_context: TileContext::default(),
         }
     }
@@ -396,34 +394,34 @@ impl AtlasFrameContext {
 pub(crate) struct TileContext {
     pub frame_index: usize,
     pub tile_index: usize,
-    pub atl_index: usize,
-    pub num_matched_patches: usize,
+    pub _atl_index: usize,
+    // pub num_matched_patches: usize,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub left_top_in_frame: (usize, usize),
     // number_of_raw_points_patches: usize,
-    // total_number_of_raw_points: usize,
-    // total_number_of_eom_points: usize,
+    pub _total_number_of_raw_points: usize,
+    pub _total_number_of_eom_points: usize,
     pub total_number_of_regular_points: usize,
-    pub global_patch_count: usize,
-    pub geometry_3d_coordinates_bitdepth: usize,
-    pub point_local_reconstruction_number: usize,
+    // pub global_patch_count: usize,
+    // pub geometry_3d_coordinates_bitdepth: usize,
+    // pub point_local_reconstruction_number: usize,
     pub use_raw_points_separate_video: bool,
-    pub raw_patch_enabled_flag: bool,
-    pub geometry_2d_bitdepth: usize,
-    pub max_depth: usize,
-    pub atlas_frame_order_count_val: u32,
-    pub atlas_frame_order_count_msb: u32,
-    pub atlas_frame_order_count_lsb: usize,
+    pub _raw_patch_enabled_flag: bool,
+    // pub geometry_2d_bitdepth: usize,
+    // pub max_depth: usize,
+    pub _atlas_frame_order_count_val: u32,
+    pub _atlas_frame_order_count_msb: u32,
+    // pub atlas_frame_order_count_lsb: usize,
     // pub ref_afoc_list: Vec<u32>,
-    pub num_ref_idx_active: usize,
-    pub best_ref_list_index_in_asps: usize,
-    pub referred_tile: bool,
-    pub log2_patch_quantizer_size: (u8, u8),
-    pub point_to_pixel: Vec<Vector3<usize>>,
+    // pub num_ref_idx_active: usize,
+    // pub best_ref_list_index_in_asps: usize,
+    // pub referred_tile: bool,
+    pub _log2_patch_quantizer_size: (u8, u8),
+    // pub point_to_pixel: Vec<Vector3<usize>>,
     pub block_to_patch: Vec<usize>,
     pub occupancy_map: Vec<u8>,
-    pub full_occupancy_map: Vec<u32>,
+    // pub full_occupancy_map: Vec<u32>,
     pub patches: Vec<Patch>,
     // raw_points_patches: Vec<RawPointsPatch>,
     // num_of_raw_points: Vec<usize>,

@@ -7,15 +7,15 @@ use crate::{
     },
     writer::{Format, PlyWriter},
 };
-use cgmath::{Matrix3, Vector3};
+use cgmath::Vector3;
 use log::trace;
 
 pub(crate) type Point3D = Vector3<u16>;
 type Color3B = Vector3<u8>;
 
 type Color16bit = Vector3<u16>;
-type Normal3D = Vector3<usize>;
-type Matrix3D = Matrix3<usize>;
+// type Normal3D = Vector3<usize>;
+// type Matrix3D = Matrix3<usize>;
 
 #[derive(Debug, Default)]
 pub(crate) struct PointSet3 {
@@ -80,7 +80,7 @@ impl PointSet3 {
 
     #[inline]
     /// add color to PointSet
-    pub(crate) fn set_color(&mut self, index: usize, color: Color3B) {
+    pub(crate) fn _set_color(&mut self, index: usize, color: Color3B) {
         assert!(self.with_colors && index < self.colors.len());
         self.colors[index] = color;
     }
@@ -120,7 +120,6 @@ impl GroupOfFrames {
     pub fn write(self, path: &Path) {
         for (i, frame) in self.frames.into_iter().enumerate() {
             let path = &path.join(format!("{:0>4}.ply", i));
-            dbg!(path);
             PlyWriter::new(frame, Format::Ascii).write(path);
         }
     }
@@ -131,19 +130,19 @@ pub(crate) struct GeneratePointCloudParams {
     pub(crate) occupancy_resolution: usize,
     pub(crate) occupancy_precision: usize,
     pub(crate) enable_size_quantization: bool,
-    pub(crate) neighbor_count_smoothing: usize,
+    // pub(crate) neighbor_count_smoothing: usize,
     // radius2_smoothing: u64,
     // radius2_boundary_detection: u64,
     // pub(crate) raw_point_color_format: ColorFormat,
     // pub(crate) nb_thread: u8,
     pub(crate) multiple_streams: bool,
     pub(crate) absolute_d1: bool,
-    pub(crate) surface_thickness: u8,
-    // flagColorSmoothing is true if enhanced_occupancy_map is not None
+    pub(crate) _surface_thickness: u8,
+    /// flagColorSmoothing is true if enhanced_occupancy_map is not None
     pub(crate) color_smoothing: Option<ColorSmoothingParams>,
-    // flagGeometrySmoothing is true if enhanced_occupancy_map is not None
+    /// flagGeometrySmoothing is true if enhanced_occupancy_map is not None
     pub(crate) geometry_smoothing: Option<GeometrySmoothingParams>,
-    // enhancedOccupancyMapCode is true if enhanced_occupancy_map is not None
+    /// enhancedOccupancyMapCode is true if enhanced_occupancy_map is not None
     pub(crate) enhanced_occupancy_map: Option<EomParams>,
     pub(crate) remove_duplicate_points: bool,
     pub(crate) map_count_minus1: u8,
@@ -152,7 +151,7 @@ pub(crate) struct GeneratePointCloudParams {
     // pub(crate) path: PathBuf,
     pub(crate) use_additional_points_patch: bool,
     pub(crate) use_aux_separate_video: bool,
-    pub(crate) geometry_bitdepth_3d: u8,
+    pub(crate) _geometry_bitdepth_3d: u8,
     // pub(crate) geometry_3d_coordinates_bitdepth: usize,
     /// Patch Block Filtering (pbf)
     pub(crate) pbf: Option<PbfParams>,
@@ -160,35 +159,35 @@ pub(crate) struct GeneratePointCloudParams {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct PbfParams {
-    passes_count: i16,
-    filter_size: i16,
-    log2_threshold: i16,
-    threshold_lossy_om: usize,
+    _passes_count: i16,
+    _filter_size: i16,
+    _log2_threshold: i16,
+    _threshold_lossy_om: usize,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct ColorSmoothingParams {
-    cgrid_size: usize,
-    threshold_color_smoothing: u64,
-    threshold_color_difference: u64,
-    threshold_color_variation: u64,
+    _cgrid_size: usize,
+    _threshold_color_smoothing: u64,
+    _threshold_color_difference: u64,
+    _threshold_color_variation: u64,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct GeometrySmoothingParams {
-    grid_size: usize,
-    grid_smoothing: bool,
-    threshold_smoothing: u64,
+    _grid_size: usize,
+    _grid_smoothing: bool,
+    _threshold_smoothing: u64,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct EomParams {
-    pub(crate) fix_bitcount: u8,
+    pub(crate) _fix_bitcount: u8,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct PlrParams {
-    pub(crate) number_of_modes: usize,
+    pub(crate) _number_of_modes: usize,
 }
 
 pub(crate) fn generate_block_to_patch_from_occupancy_map_video(
@@ -246,14 +245,14 @@ pub(crate) fn generate_point_cloud(
     context: &Context,
     atlas: &AtlasContext,
     tile: &mut TileContext,
-    frame_index: usize,
-    tile_index: usize,
     params: &GeneratePointCloudParams,
-    is_decoder: bool,
+    _is_decoder: bool,
     attribute_count: u8,
 ) -> Option<(PointSet3, Vec<usize>)> {
+    let frame_index = tile.frame_index;
+    let tile_index = tile.tile_index;
     trace!("generate point cloud F = {} start", frame_index);
-    assert!(atlas.geo_frames.len() > 0);
+    assert!(!atlas.geo_frames.is_empty());
     let geo_video = &atlas.geo_frames[0];
     let block_to_patch_width = tile.width as usize / params.occupancy_resolution;
     let block_to_patch_height = tile.height as usize / params.occupancy_resolution;
@@ -301,7 +300,7 @@ pub(crate) fn generate_point_cloud(
     trace!("Frame {} in generatePointCloud, params.useAdditionalPointsPatch = {}, params.enhancedOccupancyMapCode = {}", frame_index, params.use_additional_points_patch, params.enhanced_occupancy_map.is_some());
     trace!("mapCount = {}", map_count);
 
-    let mut video_frame_index = 0;
+    let video_frame_index;
     if params.multiple_streams {
         unimplemented!("multipleStreams is not implemented yet");
     } else {
@@ -315,13 +314,13 @@ pub(crate) fn generate_point_cloud(
         "videoFrameIndex(shift):frameIndex*mapCount = {}",
         video_frame_index
     );
-    let frame0 = if params.multiple_streams {
+    let _frame0 = if params.multiple_streams {
         unimplemented!("multipleStreams is not implemented yet");
     } else {
         geo_video.get(video_frame_index).unwrap()
     };
 
-    let bp_flag = if params.pbf.is_none() {
+    let _bp_flag = if params.pbf.is_none() {
         vec![0, tile.width as usize * tile.height as usize]
     } else {
         vec![]
@@ -416,7 +415,7 @@ pub(crate) fn generate_point_cloud(
                                 {
                                     continue;
                                 }
-                                let point_index = match patch.axis_of_additional_plane {
+                                let _point_index = match patch.axis_of_additional_plane {
                                     0 => {
                                         let point_index = reconstruct.add_point(created_points[i]);
                                         reconstruct.point_patch_indexes[point_index] =
@@ -488,17 +487,15 @@ pub(crate) fn generate_point_cloud(
         unimplemented!("geometrySmoothing && !pbf not implemented")
     }
 
-    if attribute_count > 0 {
-        for i in 0..attribute_count as usize {
-            reconstruct = color_point_cloud(
-                reconstruct,
-                tile,
-                params,
-                &atlas.attr_frames[i],
-                &point_to_pixel,
-                context.get_vps().unwrap().multiple_map_streams_present_flag,
-            );
-        }
+    for i in 0..attribute_count as usize {
+        reconstruct = color_point_cloud(
+            reconstruct,
+            tile,
+            params,
+            &atlas.attr_frames[i],
+            &point_to_pixel,
+            context.get_vps().unwrap().multiple_map_streams_present_flag,
+        );
     }
 
     Some((reconstruct, partition))
@@ -528,29 +525,28 @@ fn generate_points(
         unimplemented!("singleMapPixelInterleaving is not implemented yet");
     } else if params.point_local_reconstruction.is_some() {
         unimplemented!("pointLocalReconstruction is not implemented yet");
-    } else {
-        if params.map_count_minus1 > 0 {
-            let frame1 = if params.multiple_streams {
-                unimplemented!("multipleStreams is not implemented yet");
-            } else {
-                geo_video.get(video_frame_index + 1).unwrap()
-            };
-            // NOTE: see above for the reason why we divide the depth by 4
-            let d1 = frame1.get(0, x, y) / 4 as u16;
-            let point1 = if params.absolute_d1 {
-                patch.generate_point(u, v, d1)
-            } else if patch.projection_mode == 0 {
-                let mut point1 = point0.clone();
-                point1[patch.axes.0 as usize] += d1;
-                point1
-            } else {
-                let mut point1 = point0.clone();
-                point1[patch.axes.0 as usize] -= d1;
-                point1
-            };
-            created_points.push(point1);
-        }
+    } else if params.map_count_minus1 > 0 {
+        let frame1 = if params.multiple_streams {
+            unimplemented!("multipleStreams is not implemented yet");
+        } else {
+            geo_video.get(video_frame_index + 1).unwrap()
+        };
+        // NOTE: see above for the reason why we divide the depth by 4
+        let d1 = frame1.get(0, x, y) / 4_u16;
+        let point1 = if params.absolute_d1 {
+            patch.generate_point(u, v, d1)
+        } else if patch.projection_mode == 0 {
+            let mut point1 = point0;
+            point1[patch.axes.0 as usize] += d1;
+            point1
+        } else {
+            let mut point1 = point0;
+            point1[patch.axes.0 as usize] -= d1;
+            point1
+        };
+        created_points.push(point1);
     }
+
     created_points
 }
 
@@ -575,14 +571,16 @@ fn color_point_cloud(
     }
     assert!(reconstruct.colors.len() == reconstruct.positions.len());
 
-    let frame0 = video.get(0).unwrap();
-    let frame1 = video.get(1).unwrap();
+    let _frame0 = video.get(0).unwrap();
+    let _frame1 = video.get(1).unwrap();
     let map_count = params.map_count_minus1 as usize + 1;
 
     let point_count = if tile.use_raw_points_separate_video {
         tile.total_number_of_regular_points
     } else {
-        tile.total_number_of_regular_points // + tile.total_number_of_eom_points + tile.total_number_of_raw_points
+        tile.total_number_of_regular_points
+            + tile._total_number_of_eom_points
+            + tile._total_number_of_raw_points
     };
 
     trace!("pointcount = {}", point_count);
