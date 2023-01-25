@@ -22,3 +22,6 @@ num_enum = "0.5.7"
 
 [[bin]]
 name = "decoder"
+
+[profile.release]
+debug = true

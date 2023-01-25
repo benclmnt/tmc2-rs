@@ -119,8 +119,14 @@ impl GroupOfFrames {
 
     pub fn write(self, path: &Path) {
         for (i, frame) in self.frames.into_iter().enumerate() {
-            let path = &path.join(format!("{:0>4}.ply", i));
-            PlyWriter::new(frame, Format::Ascii).write(path);
+            let path = if path.is_dir() {
+                path.join(format!("{:0>4}.ply", i))
+            } else {
+                let parent = path.parent().unwrap();
+                let filename = path.file_name().unwrap().to_str().unwrap();
+                parent.join(filename.replace("%4d", format!("{:0>4}", i).as_ref()))
+            };
+            PlyWriter::new(frame, Format::Ascii).write(&path);
         }
     }
 }

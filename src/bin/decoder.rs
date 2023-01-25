@@ -16,7 +16,9 @@ struct Args {
     #[clap(short = 'i', long)]
     compressed_stream_path: PathBuf,
 
-    /// Output decoded pointcloud. Multi-frame sequences maybe represented by %04i
+    /// Output path for decoded pointcloud.
+    /// Specify either folder path or
+    /// customized path for multi-frame sequences, with sequence number represented as %04d, e.g. ~/output/sequence_%04d.ply
     #[clap(short = 'o', long)]
     reconstructed_data_path: Option<PathBuf>,
 
@@ -67,7 +69,7 @@ struct Args {
 
 impl Args {
     fn check(&self) -> bool {
-        println!("Info: Using internal color space conversion");
+        // println!("Info: Using internal color space conversion");
 
         true
     }
@@ -89,6 +91,7 @@ fn decompress_video(args: Args) {
             .with_start_frame(args.start_frame);
     // FIXME(7Jan23): handle %04d in reconstructed data path properly...
     if args.reconstructed_data_path.is_some() {
+        std::fs::create_dir_all(args.reconstructed_data_path.as_ref().unwrap()).unwrap();
         decoder_params =
             decoder_params.with_reconstructed_data_path(args.reconstructed_data_path.unwrap());
     }

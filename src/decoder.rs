@@ -1135,7 +1135,7 @@ impl VideoDecoder for LibavcodecDecoder {
         use tempfile::NamedTempFile;
 
         let mut tmpfile = NamedTempFile::new().unwrap();
-        println!("{:?}. bytestream length: {}", &tmpfile.path(), data.len());
+        debug!("{:?}. bytestream length: {}", &tmpfile.path(), data.len());
         // TODO: use a buffer instead of writing to a tmpfile
         // Currently we write to disk because I can't figure out how to use ffmpeg API with a buffer
         // The tmpfile is not significant. It will be deleted when it goes out of scope
