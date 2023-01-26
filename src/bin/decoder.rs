@@ -1,9 +1,8 @@
 use clap::Parser;
+use log::info;
 use std::path::PathBuf;
-use tmc2rs::bitstream;
-use tmc2rs::bitstream::Bitstream;
-use tmc2rs::common::context::Context;
-use tmc2rs::decoder;
+use tmc2rs::writer::{Format, PlyWriter};
+use tmc2rs::{Decoder, Params};
 
 /// An MPEG-VPCC-TMC2 conformant decoder
 #[derive(Parser)]
@@ -75,47 +74,6 @@ impl Args {
     }
 }
 
-fn decompress_video(args: Args) {
-    let bitstream = Bitstream::from_file(&args.compressed_stream_path);
-    // let mut bitstream_stat = bitstream::Stat::new();
-    // TODO[checks] bitstream.computeMD5()
-    // TODO[stat] (9Dec22): Do everything related to bitstream_stat
-    // bitstream_stat.header = bitstream.size()
-    let _frame_number = args.start_frame;
-    let (mut ssvu, _header_size) =
-        bitstream::reader::SampleStreamV3CUnit::from_bitstream(&bitstream);
-    // TODO[stat] bitstream_stat.incr_header(header_size);
-
-    let mut decoder_params =
-        decoder::Params::new(args.compressed_stream_path, args.video_decoder_path)
-            .with_start_frame(args.start_frame);
-    if args.reconstructed_data_path.is_some() {
-        std::fs::create_dir_all(args.reconstructed_data_path.as_ref().unwrap()).unwrap();
-        decoder_params =
-            decoder_params.with_reconstructed_data_path(args.reconstructed_data_path.unwrap());
-    }
-    let decoder = decoder::Decoder::new(decoder_params);
-
-    // IDEA (9Dec22): We can parallelize iterations of this loop, since the data is self-contained.
-    // i.e. AD, OVD, GVD, AVD are independent only of the VPS that immediately precedes it.
-    // In the reference implementation, after running `ssvu.decode(...)`, the decoder is run, which kinda implies that there is some potential for parallelism here.
-    // Check how `context.active_vps` is updated.
-    while ssvu.get_v3c_unit_count() > 0 {
-        // DIFF: This is different (I think) from the reference implementation.
-        let mut context = Context::default();
-        // TODO[stat] context.set_bitstream_stat(&bitstream_stat);
-        ssvu.decode(&mut context);
-        // TODO[checks]: context.check_profile()
-
-        // context.atlas_contexts[i].allocate_video_frames(&mut context);
-        // context.atlas_index = atl_id as u8;
-        let gof = decoder.decode(&mut context);
-        // SKIP: a bunch of if clauses on metrics.
-
-        gof.write(&decoder.params.reconstructed_data_path);
-    }
-}
-
 fn main() {
     env_logger::init();
 
@@ -126,5 +84,32 @@ fn main() {
         return;
     }
 
-    decompress_video(args);
+    let decoder_params = Params::new(args.compressed_stream_path, args.video_decoder_path);
+    if args.reconstructed_data_path.is_some() {
+        std::fs::create_dir_all(args.reconstructed_data_path.as_ref().unwrap()).unwrap();
+    }
+
+    let mut decoder = Decoder::new(decoder_params);
+
+    decoder.start();
+    let mut frame_num = args.start_frame;
+    let path = args.reconstructed_data_path.unwrap();
+
+    loop {
+        let frame = decoder.recv_frame();
+        if frame.is_none() {
+            break;
+        }
+        let frame = frame.unwrap();
+        let path = if path.is_dir() {
+            path.join(format!("{:0>4}.ply", frame_num))
+        } else {
+            let parent = path.parent().unwrap();
+            let filename = path.file_name().unwrap().to_str().unwrap();
+            parent.join(filename.replace("%4d", format!("{:0>4}", frame_num).as_ref()))
+        };
+        PlyWriter::new(frame, Format::Ascii).write(&path);
+        info!("Frame {} written to {}", frame_num, path.display());
+        frame_num += 1;
+    }
 }

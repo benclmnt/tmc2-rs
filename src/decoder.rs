@@ -10,67 +10,17 @@ use crate::{
         context::{AtlasContext, AtlasFrameContext, TileContext},
         ColorFormat, VideoAttribute, VideoGeometry, VideoOccupancyMap,
     },
+    Params,
 };
 
 use super::common::context::Context;
 use log::{debug, trace};
 use num_enum::FromPrimitive;
-use std::path::PathBuf;
 use std::{cell::RefCell, fs::File};
 use std::{io::Write, marker::PhantomData};
-#[derive(Debug, Default)]
-pub struct Params {
-    pub start_frame: usize,
-    pub compressed_stream_path: PathBuf,
-    pub reconstructed_data_path: PathBuf,
-    pub video_decoder_path: Option<PathBuf>,
-    // (2Jan23): always true
-    // pub is_bytestream_video_coder: bool,
-    pub keep_intermediate_files: bool,
 
-    pub patch_color_subsampling: bool,
-    pub color_space_conversion_path: Option<PathBuf>,
-    pub inverse_color_space_conversion_config: Option<PathBuf>,
-
-    // reconstruction options
-    // NOTE (9Dec22): all set to default (false) for now since we are only supporting Rec0
-    pixel_deinterleaving_type: bool,
-    point_local_reconstruction_type: bool,
-    reconstruction_eom_type: bool,
-    _duplicated_point_removal_type: bool,
-    reconstruct_raw_type: bool,
-    apply_geo_smoothing_type: bool,
-    apply_attr_smoothing_type: bool,
-    attr_transfer_filter_type: bool,
-    apply_occupancy_synthesis_type: bool,
-}
-
-impl Params {
-    pub fn new(compressed_stream: PathBuf, video_decoder_path: Option<PathBuf>) -> Self {
-        Self {
-            compressed_stream_path: compressed_stream.clone(),
-            reconstructed_data_path: PathBuf::from(&format!(
-                "{:?}_dec_%04d.ply",
-                compressed_stream.file_stem().unwrap_or_default()
-            )),
-            video_decoder_path,
-            ..Default::default()
-        }
-    }
-
-    pub fn with_start_frame(mut self, start_frame: usize) -> Self {
-        self.start_frame = start_frame;
-        self
-    }
-
-    pub fn with_reconstructed_data_path(mut self, reconstructed_data_path: PathBuf) -> Self {
-        self.reconstructed_data_path = reconstructed_data_path;
-        self
-    }
-}
-
-pub struct Decoder {
-    pub params: Params,
+pub(crate) struct Decoder {
+    params: Params,
 }
 
 impl Decoder {

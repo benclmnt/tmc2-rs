@@ -11,7 +11,7 @@ pub enum Format {
     // BinaryBigEndian,
 }
 
-pub(crate) struct PlyWriter {
+pub struct PlyWriter {
     pc: PointSet3,
     format: Format,
 }

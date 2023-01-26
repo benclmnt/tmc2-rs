@@ -18,7 +18,7 @@ type Color16bit = Vector3<u16>;
 // type Matrix3D = Matrix3<usize>;
 
 #[derive(Debug, Default)]
-pub(crate) struct PointSet3 {
+pub struct PointSet3 {
     // NOTE: IF YOU UPDATE THIS STRUCT, dont forget to update resize and append point set.
     pub(crate) positions: Vec<Point3D>,
     pub(crate) colors: Vec<Color3B>,
@@ -117,7 +117,8 @@ impl GroupOfFrames {
         true
     }
 
-    pub fn write(self, path: &Path) {
+    /// Internal function to write a group of frames to a file
+    fn write(self, path: &Path) {
         for (i, frame) in self.frames.into_iter().enumerate() {
             let path = if path.is_dir() {
                 path.join(format!("{:0>4}.ply", i))
