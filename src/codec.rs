@@ -89,7 +89,7 @@ impl PointSet3 {
         assert!(self.with_colors);
         assert!(self.colors16bit.len() == self.point_count());
         for (i, color16bit) in self.colors16bit.iter().enumerate() {
-            self.colors[i] = convert_yuv16_to_rgb8(color16bit);
+            self.colors[i] = convert_yuv10_to_rgb8(color16bit);
         }
     }
 
@@ -417,13 +417,15 @@ pub(crate) fn generate_point_cloud(
                             for i in 0..created_points.len() {
                                 if params.remove_duplicate_points
                                     && i == 0
-                                    && created_points[i] == created_points[0]
+                                    && created_points[i].is_some()
+                                    && created_points[i].unwrap() == created_points[0].unwrap()
                                 {
                                     continue;
                                 }
                                 let _point_index = match patch.axis_of_additional_plane {
                                     0 => {
-                                        let point_index = reconstruct.add_point(created_points[i]);
+                                        let point_index =
+                                            reconstruct.add_point(created_points[i].unwrap());
                                         reconstruct.point_patch_indexes[point_index] =
                                             (tile_index, patch_index);
                                         point_index
@@ -507,6 +509,7 @@ pub(crate) fn generate_point_cloud(
     Some((reconstruct, partition))
 }
 
+#[inline(never)]
 fn generate_points(
     params: &GeneratePointCloudParams,
     tile: &TileContext,
@@ -515,10 +518,10 @@ fn generate_points(
     patch_index: usize,
     (u, v): (usize, usize),
     (x, y): (usize, usize),
-) -> Vec<Point3D> {
+) -> [Option<Point3D>; 2] {
     let patch = &tile.patches[patch_index];
     let frame0 = geo_video.get(video_frame_index).unwrap();
-    let mut created_points = vec![];
+    // let mut created_points = vec![];
     let point0 = if params.pbf.is_some() {
         unimplemented!("pbfEnableFlag is not implemented yet");
     } else {
@@ -526,8 +529,8 @@ fn generate_points(
         // Note that it should still stored as Video<u16> (yeah reference impl is strange i know). We cannot change to Video<u8> otherwise the metadata (indices etc) stored in the atlas will point to out-of-bounds data.
         patch.generate_point(u, v, frame0.get(0, x, y) / 4)
     };
-    created_points.push(point0);
-    if params.single_map_pixel_interleaving {
+    // created_points.push(point0);
+    let point1 = if params.single_map_pixel_interleaving {
         unimplemented!("singleMapPixelInterleaving is not implemented yet");
     } else if params.point_local_reconstruction.is_some() {
         unimplemented!("pointLocalReconstruction is not implemented yet");
@@ -550,13 +553,15 @@ fn generate_points(
             point1[patch.axes.0 as usize] -= d1;
             point1
         };
-        created_points.push(point1);
-    }
-
-    created_points
+        Some(point1)
+    } else {
+        None
+    };
+    [Some(point0), point1]
 }
 
 /// Color a point set with the attribute.
+#[inline(never)]
 fn color_point_cloud(
     mut reconstruct: PointSet3,
     tile: &TileContext,
@@ -651,7 +656,7 @@ fn color_point_cloud(
 /// Convert YUV10bit to RGB8bit
 ///
 /// Modified from https://softpixel.com/~cwright/programming/colorspace/yuv/
-fn convert_yuv16_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
+fn convert_yuv10_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
     // yuv16 to rgb8
     let clamp = |x: f64| -> u8 {
         if x < 0. {

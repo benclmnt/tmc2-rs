@@ -89,7 +89,6 @@ fn decompress_video(args: Args) {
     let mut decoder_params =
         decoder::Params::new(args.compressed_stream_path, args.video_decoder_path)
             .with_start_frame(args.start_frame);
-    // FIXME(7Jan23): handle %04d in reconstructed data path properly...
     if args.reconstructed_data_path.is_some() {
         std::fs::create_dir_all(args.reconstructed_data_path.as_ref().unwrap()).unwrap();
         decoder_params =
