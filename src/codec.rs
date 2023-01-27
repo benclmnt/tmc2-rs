@@ -416,8 +416,8 @@ pub(crate) fn generate_point_cloud(
                             );
 
                             for i in 0..created_points.len() {
-                                if params.remove_duplicate_points
-                                    && i == 0
+                                if i != 0
+                                    // && params.remove_duplicate_points
                                     && created_points[i].is_some()
                                     && created_points[i].unwrap() == created_points[0].unwrap()
                                 {
