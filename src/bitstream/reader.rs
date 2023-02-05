@@ -680,13 +680,15 @@ impl SampleStreamV3CUnit {
         v3c_unit
     }
 
-    /// Originally PCCBitstreamReader::decode
+    /// Originally PCCBitstreamReader::decode.
+    /// Decodes a GoF (group of frames) from the bitstream into the syntax.
     pub fn decode(&mut self, syntax: &mut Context) {
         let mut num_vps = 0; // counter for atlas information
 
         // let bitstream_stat = &mut syntax.bitstream_stat;
         // bitstream_stat.new_gof();
 
+        // loop through v3c units until we meet the next v3c parameter set, which indicates the start of the data in the binary stream for the next gof.
         while self.get_v3c_unit_count() > 0 {
             let unit = &mut self.front();
             let v3c_unit_type = unit.peek_type();

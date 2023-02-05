@@ -10,8 +10,8 @@ use crate::{
 use cgmath::Vector3;
 use log::trace;
 
-pub(crate) type Point3D = Vector3<u16>;
-type Color3B = Vector3<u8>;
+pub type Point3D = Vector3<u16>;
+pub type Color3B = Vector3<u8>;
 
 type Color16bit = Vector3<u16>;
 // type Normal3D = Vector3<usize>;
@@ -20,8 +20,8 @@ type Color16bit = Vector3<u16>;
 #[derive(Debug, Default)]
 pub struct PointSet3 {
     // NOTE: IF YOU UPDATE THIS STRUCT, dont forget to update resize and append point set.
-    pub(crate) positions: Vec<Point3D>,
-    pub(crate) colors: Vec<Color3B>,
+    pub positions: Vec<Point3D>,
+    pub colors: Vec<Color3B>,
     colors16bit: Vec<Color16bit>,
     // boundary_point_types: Vec<u16>,
     point_patch_indexes: Vec<(usize, usize)>,
@@ -31,7 +31,7 @@ pub struct PointSet3 {
     // reflectances: Vec<u16>,
     // normals: Vec<Normal3D>,
     // with_normals: bool,
-    pub(crate) with_colors: bool,
+    pub with_colors: bool,
     // with_reflectances: bool,
 }
 
@@ -103,6 +103,11 @@ impl PointSet3 {
                 z: color16bit.z as u8,
             };
         }
+    }
+
+    pub fn len(&self) -> usize {
+        assert!(!self.with_colors || self.positions.len() == self.colors.len());
+        self.positions.len()
     }
 }
 

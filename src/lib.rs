@@ -1,5 +1,5 @@
 mod bitstream;
-mod codec;
+pub mod codec;
 mod common;
 mod decoder;
 pub mod writer;
@@ -13,6 +13,7 @@ use std::thread;
 
 pub struct Decoder {
     params: Params,
+    // will be None once the decoder is started.
     tx: Option<chan::Sender<PointSet3>>,
     rx: chan::Receiver<PointSet3>,
 }
@@ -75,6 +76,7 @@ impl Decoder {
         }
     }
 
+    /// start can only be called once per Decoder instance.
     pub fn start(&mut self) {
         let bitstream = Bitstream::from_file(&self.params.compressed_stream_path);
         // let mut bitstream_stat = bitstream::Stat::new();
