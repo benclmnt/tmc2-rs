@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::common::context::Context;
+use crossbeam_channel::Sender;
 use log::{debug, trace};
 use num_enum::FromPrimitive;
 use std::{cell::RefCell, fs::File};
@@ -28,8 +29,10 @@ impl Decoder {
         Self { params }
     }
 
-    pub fn decode(&self, context: &mut Context) -> GroupOfFrames {
-        // TODO(12Dec22): this function can be parallelized it seems
+    /// Decode the parsed compressed stream (as represented in `Context`) and send the results frame-by-frame through the `tx` channel.
+    /// If any errors occur while sending (e.g. due to receiver being dropped), it will panic.
+    pub fn decode(&self, context: &mut Context, tx: Sender<PointSet3>) {
+        // TODO(12Dec22): it seems that this function can be parallelized
         // if ( params_.nbThread_ > 0 ) { tbb::task_scheduler_init init( static_cast<int>( params_.nbThread_ ) ); }
 
         let mut atlas_context = Self::create_patch_frame(context);
@@ -177,9 +180,6 @@ impl Decoder {
         }
 
         // Reconstruction
-        let mut gof = GroupOfFrames {
-            frames: Vec::with_capacity(frame_count),
-        };
         // TODO: recreating the prediction list per attribute (either the attribtue is coded absolute, or follows the geometry)
 
         debug!("generate point cloud of {} frames", frame_count);
@@ -307,10 +307,9 @@ impl Decoder {
 
             // SKIP: some checksum stuff
 
-            gof.frames.push(reconstruct);
+            // gof.frames.push(reconstruct);
+            tx.send(reconstruct).unwrap();
         }
-
-        gof
     }
 
     /// Create the context for all patches in all frames in atlas_context
@@ -894,9 +893,15 @@ pub enum CodecId {
 }
 
 impl CodecId {
-    pub fn from(_codec_id: u8) -> CodecId {
-        assert_eq!(_codec_id, 1);
-        CodecId::H265
+    pub fn from(codec_id: u8) -> CodecId {
+        // HMAPP is set to 1 in PCCCommon.h of the reference software
+        assert_eq!(codec_id, 1, "currently only H265 is expected");
+        match codec_id {
+            0 | 3 => CodecId::H264,
+            1 | 2 | 4 => CodecId::H265,
+            5 => CodecId::H266,
+            _ => CodecId::H265,
+        }
     }
 }
 
@@ -970,7 +975,7 @@ impl<T> Image<T> {
         }
     }
 
-    /// This is an internal function for debugging purposes. Please don't rely on it.
+    /// This is an internal function for debugging purposes. Don't rely on it.
     #[allow(dead_code)]
     fn write(&self, filename: &str) {
         let mut file = File::create(filename).unwrap();
@@ -1024,11 +1029,12 @@ struct VideoDecoderOptions {
 }
 
 trait VideoDecoder {
-    /// Does the heavylifting of calling the external video decoder (e.g. ffmpeg/HM/JM) and returns the decoded video.
+    /// Calls the external video (2D) decoder (e.g. ffmpeg/HM/JM) and returns the decoded video.
     fn decode<T>(&mut self, data: &[u8], codec_id: CodecId) -> Result<Video<T>, ()>
     where
         T: Copy + Default;
 
+    /// Decompresses the bitstream into a video.
     fn decompress<T>(
         &mut self,
         bitstream: &VideoBitstream,
@@ -1073,6 +1079,7 @@ trait VideoDecoder {
     }
 }
 
+/// This is a wrapper around ffmpeg's libavcodec decoder
 pub struct LibavcodecDecoder {}
 
 impl VideoDecoder for LibavcodecDecoder {
@@ -1102,7 +1109,7 @@ impl VideoDecoder for LibavcodecDecoder {
         let mut decctx = Context::new();
         unsafe {
             let ptr = decctx.as_mut_ptr();
-            (*ptr).pix_fmt = format::Pixel::YUV420P.into();
+            (*ptr).pix_fmt = format::Pixel::YUV420P10LE.into();
         }
 
         let mut decoder = decctx

@@ -332,11 +332,11 @@ pub(crate) fn generate_point_cloud(
         geo_video.get(video_frame_index).unwrap()
     };
 
-    let _bp_flag = if params.pbf.is_none() {
-        vec![0, tile.width as usize * tile.height as usize]
-    } else {
-        vec![]
-    };
+    // let _bp_flag = if params.pbf.is_none() {
+    //     vec![0, tile.width as usize * tile.height as usize]
+    // } else {
+    //     vec![]
+    // };
     // let mut eom_points_per_patch = vec![];
     // eom_points_per_patch.resize
     let patch_precedence_order_flag = context

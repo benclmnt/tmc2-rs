@@ -11,6 +11,7 @@ use crossbeam_channel as chan;
 use std::path::PathBuf;
 use std::thread;
 
+/// The library's decoder
 pub struct Decoder {
     params: Params,
     // will be None once the decoder is started.
@@ -18,6 +19,7 @@ pub struct Decoder {
     rx: chan::Receiver<PointSet3>,
 }
 
+/// Params to pass in to the library's decoder
 #[derive(Debug, Default, Clone)]
 pub struct Params {
     // NOTE: we don't need start_frame and reconstructed_data_path while decoding
@@ -76,7 +78,10 @@ impl Decoder {
         }
     }
 
-    /// start can only be called once per Decoder instance.
+    /// starts the decoding process in a separate thread.
+    /// The decoded point cloud can be retrieved in order by repeatedly calling `recv_frame()` method until it returns None.
+    ///
+    /// Note: This function can only be called once per Decoder instance.
     pub fn start(&mut self) {
         let bitstream = Bitstream::from_file(&self.params.compressed_stream_path);
         // let mut bitstream_stat = bitstream::Stat::new();
@@ -88,7 +93,10 @@ impl Decoder {
         // TODO[stat] bitstream_stat.incr_header(header_size);
 
         let decoder = decoder::Decoder::new(self.params.clone());
-        let tx = self.tx.take().unwrap();
+        let tx = self
+            .tx
+            .take()
+            .expect("library decoder can only be started once");
 
         thread::spawn(move || {
             // IDEA (9Dec22): We can parallelize iterations of this loop, since the data is self-contained.
@@ -104,18 +112,15 @@ impl Decoder {
 
                 // context.atlas_contexts[i].allocate_video_frames(&mut context);
                 // context.atlas_index = atl_id as u8;
-                let gof = decoder.decode(&mut context);
+                let _gof = decoder.decode(&mut context, tx.clone());
                 // SKIP: a bunch of if clauses on metrics.
-
-                for frame in gof.frames {
-                    tx.send(frame).unwrap();
-                }
             }
 
             drop(tx);
         });
     }
 
+    /// returns the next decoded frame, if any. If it returns None, the decoder has finished decoding all the frames.
     pub fn recv_frame(&self) -> Option<PointSet3> {
         self.rx.recv().ok()
     }

@@ -11,6 +11,7 @@ pub enum Format {
     // BinaryBigEndian,
 }
 
+/// An unoptimized ply writer to write point clouds out for inspection.
 pub struct PlyWriter {
     pc: PointSet3,
     format: Format,

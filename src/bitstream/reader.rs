@@ -8,16 +8,6 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 #[derive(Default)]
-struct ReadableAuxData<'a> {
-    syntax: Option<&'a mut Context>,
-    aux: Option<[usize; 2]>,
-}
-
-trait Readable {
-    fn from_bitstream(bitstream: &Bitstream, aux_data: ReadableAuxData) -> Self;
-}
-
-#[derive(Default)]
 struct V3CUnit {
     unit_type: V3CUnitType,
     size: usize,
@@ -92,8 +82,7 @@ impl V3CUnit {
     fn decode_payload(&self, syntax: &mut Context) {
         match self.unit_type {
             V3CUnitType::V3cParameterSet => {
-                let vps =
-                    V3CParameterSet::from_bitstream(&self.bitstream, ReadableAuxData::default());
+                let vps = V3CParameterSet::from_bitstream(&self.bitstream);
                 syntax.allocate_atlas_hls(vps.atlas_count_minus1 as usize + 1);
                 syntax.add_v3c_parameter_set(vps);
             }
@@ -264,10 +253,8 @@ impl V3CParameterSet {
         self.map_predictor_index_diff
             .resize(self.map_count_minus1 as usize + 1, false);
     }
-}
 
-impl Readable for V3CParameterSet {
-    fn from_bitstream(bitstream: &Bitstream, _: ReadableAuxData) -> Self {
+    fn from_bitstream(bitstream: &Bitstream) -> Self {
         let mut sps = V3CParameterSet {
             profile_tier_level: ProfileTierLevel::from_bitstream(bitstream),
             ..Default::default()

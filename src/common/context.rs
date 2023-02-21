@@ -284,7 +284,8 @@ impl AtlasHighLevelSyntax {
     }
 }
 
-/// Context for a collection of frames
+/// Context for a collection of frames.
+/// `frame_contexts` contain the metadata/context for each frames stored in occ_frames, geo_frames and attr_frames.
 #[derive(Default, Clone)]
 pub(crate) struct AtlasContext {
     // atlas_index: usize, // always 0 for V3C
@@ -334,7 +335,7 @@ impl AtlasContext {
 }
 
 /// Context for an atlas frame.
-/// It contains context for each patch that makes up the frame.
+/// It contains context for each tile that makes up the frame.
 #[derive(Clone)]
 pub(crate) struct AtlasFrameContext {
     // frame_index: usize,
@@ -389,7 +390,8 @@ impl AtlasFrameContext {
     }
 }
 
-/// Originally PCCFrameContext
+/// Originally PCCFrameContext. Each tile can have multiple patches.
+/// `patches` field contains the metadata to interpret patches stored in the geometry, occupancy, and attribute bitstreams.
 #[derive(Default, Clone)]
 pub(crate) struct TileContext {
     pub frame_index: usize,
