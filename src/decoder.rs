@@ -5,7 +5,7 @@ use crate::{
         },
         VideoBitstream, VideoType,
     },
-    codec::{self, generate_point_cloud, EomParams, GroupOfFrames, Point3D, PointSet3},
+    codec::{self, generate_point_cloud, EomParams, Point3D, PointSet3},
     common::{
         context::{AtlasContext, AtlasFrameContext, TileContext},
         ColorFormat, VideoAttribute, VideoGeometry, VideoOccupancyMap,
@@ -967,7 +967,7 @@ pub(crate) struct Image<T> {
 impl<T> Image<T> {
     /// This is an internal function to get the index of the pixel in the image
     fn get_helper(&self, channel: usize, u: usize, v: usize) -> usize {
-        assert!(channel < 3 && u < self.width as usize && v < self.height as usize);
+        assert!(channel < 3 && u < self.width && v < self.height);
         match (self.format, channel) {
             (ColorFormat::Yuv420, 0) => v * self.width + u,
             (ColorFormat::Yuv420, _) => (v / 2) * (self.width / 2) + (u / 2),

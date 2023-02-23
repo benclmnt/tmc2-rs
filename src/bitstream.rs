@@ -336,7 +336,7 @@ pub(crate) enum VideoType {
 
 impl fmt::Display for VideoType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
         // or, alternatively:
         // fmt::Debug::fmt(self, f)
     }

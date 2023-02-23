@@ -100,11 +100,11 @@ fn main() {
     for (i, frame) in decoder.into_iter().enumerate() {
         let frame_num = i + args.start_frame;
         let path = if path.is_dir() {
-            path.join(format!("{:0>4}.ply", frame_num))
+            path.join(format!("{frame_num:0>4}.ply"))
         } else {
             let parent = path.parent().unwrap();
             let filename = path.file_name().unwrap().to_str().unwrap();
-            parent.join(filename.replace("%4d", format!("{:0>4}", frame_num).as_ref()))
+            parent.join(filename.replace("%4d", format!("{frame_num:0>4}").as_ref()))
         };
         PlyWriter::new(frame, Format::Ascii).write(&path);
         info!("Frame {} written to {}", frame_num, path.display());

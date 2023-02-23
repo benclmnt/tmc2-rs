@@ -49,9 +49,9 @@ pub struct Params {
 }
 
 impl Params {
-    pub fn new(compressed_stream: PathBuf) -> Self {
+    pub fn new(compressed_stream_path: PathBuf) -> Self {
         Self {
-            compressed_stream_path: compressed_stream.clone(),
+            compressed_stream_path,
             ..Default::default()
         }
     }
@@ -124,7 +124,7 @@ impl Decoder {
 
                 // context.atlas_contexts[i].allocate_video_frames(&mut context);
                 // context.atlas_index = atl_id as u8;
-                let _gof = decoder.decode(&mut context, tx.clone());
+                decoder.decode(&mut context, tx.clone());
                 // SKIP: a bunch of if clauses on metrics.
             }
 

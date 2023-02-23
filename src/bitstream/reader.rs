@@ -1022,8 +1022,8 @@ impl AtlasSequenceParameterSetRbsp {
     fn from_bitstream(bitstream: &Bitstream) -> Self {
         let mut asps = AtlasSequenceParameterSetRbsp::default();
         asps.atlas_sequence_parameter_set_id = bitstream.read_uvlc() as u8;
-        asps.frame_width = bitstream.read_uvlc() as u32;
-        asps.frame_height = bitstream.read_uvlc() as u32;
+        asps.frame_width = bitstream.read_uvlc();
+        asps.frame_height = bitstream.read_uvlc();
         asps.geometry_3d_bitdepth_minus1 = bitstream.read(5) as u8;
         asps.geometry_2d_bitdepth_minus1 = bitstream.read(5) as u8;
         asps.log2_max_atlas_frame_order_cnt_lsb_minus_4 = bitstream.read_uvlc() as u8;
