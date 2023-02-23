@@ -70,7 +70,7 @@ impl Params {
 
 impl Decoder {
     pub fn new(params: Params) -> Self {
-        let (tx, rx) = chan::unbounded();
+        let (tx, rx) = chan::bounded(1);
         Self {
             params,
             tx: Some(tx),
