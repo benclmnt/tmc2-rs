@@ -7,28 +7,33 @@ use tmc2rs::{Decoder, Params};
 /// An MPEG-VPCC-TMC2 conformant decoder
 #[derive(Parser)]
 struct Args {
-    /// Configuration file name
-    #[clap(short = 'c', long)]
-    config: Option<String>,
-
-    /// Output(encoder) / Input(decoder) compressed bitstream
+    // /// Configuration file name
+    // #[clap(short = 'c', long)]
+    // config: Option<String>,
+    /// Path to the compressed bitstream input
     #[clap(short = 'i', long)]
     compressed_stream_path: PathBuf,
 
     /// Output path for decoded pointcloud.
+    ///
     /// Specify either folder path or
-    /// customized path for multi-frame sequences, with sequence number represented as %04d, e.g. ~/output/sequence_%04d.ply
+    /// customized path for multi-frame sequences, with sequence number represented as %04d, e.g. `output/sequence_%04d.ply`
     #[clap(short = 'o', long)]
-    reconstructed_data_path: Option<PathBuf>,
+    reconstructed_data_path: PathBuf,
 
     /// First frame number in sequence to encode/decode
     #[clap(long, default_value_t = 0)]
     start_frame: usize,
 
     /// Number of thread used for parallel processing
+    ///
+    /// This option currently has no effect.
     #[clap(long, default_value_t = 4)]
     num_threads: u8,
 
+    /// Keep intermediate files for inspection
+    ///
+    /// This option currently has no effect.
     #[clap(long, default_value_t = true)]
     keep_intermediate_files: bool,
 
@@ -84,23 +89,16 @@ fn main() {
         return;
     }
 
-    let decoder_params = Params::new(args.compressed_stream_path, args.video_decoder_path);
-    if args.reconstructed_data_path.is_some() {
-        std::fs::create_dir_all(args.reconstructed_data_path.as_ref().unwrap()).unwrap();
-    }
+    let decoder_params = Params::new(args.compressed_stream_path);
+    std::fs::create_dir_all(&args.reconstructed_data_path).unwrap();
 
     let mut decoder = Decoder::new(decoder_params);
 
     decoder.start();
-    let mut frame_num = args.start_frame;
-    let path = args.reconstructed_data_path.unwrap();
+    let path = args.reconstructed_data_path;
 
-    loop {
-        let frame = decoder.recv_frame();
-        if frame.is_none() {
-            break;
-        }
-        let frame = frame.unwrap();
+    for (i, frame) in decoder.into_iter().enumerate() {
+        let frame_num = i + args.start_frame;
         let path = if path.is_dir() {
             path.join(format!("{:0>4}.ply", frame_num))
         } else {
@@ -110,6 +108,5 @@ fn main() {
         };
         PlyWriter::new(frame, Format::Ascii).write(&path);
         info!("Frame {} written to {}", frame_num, path.display());
-        frame_num += 1;
     }
 }

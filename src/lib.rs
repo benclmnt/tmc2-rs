@@ -49,10 +49,9 @@ pub struct Params {
 }
 
 impl Params {
-    pub fn new(compressed_stream: PathBuf, video_decoder_path: Option<PathBuf>) -> Self {
+    pub fn new(compressed_stream: PathBuf) -> Self {
         Self {
             compressed_stream_path: compressed_stream.clone(),
-            video_decoder_path,
             ..Default::default()
         }
     }
@@ -62,8 +61,8 @@ impl Params {
     //     self
     // }
 
-    // pub fn with_reconstructed_data_path(mut self, reconstructed_data_path: PathBuf) -> Self {
-    //     self.reconstructed_data_path = reconstructed_data_path;
+    // pub fn with_video_decoder(mut self, video_decoder_path: PathBuf) -> Self {
+    //     self.video_decoder_path = Some(video_decoder_path);
     //     self
     // }
 }
@@ -78,10 +77,23 @@ impl Decoder {
         }
     }
 
-    /// starts the decoding process in a separate thread.
+    /// Spawns a thread to decode.
     /// The decoded point cloud can be retrieved in order by repeatedly calling `recv_frame()` method until it returns None.
     ///
-    /// Note: This function can only be called once per Decoder instance.
+    /// Caller needs to ensure that this function is only called once per Decoder instance. Calling more than once will panic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use tmc2rs::{Decoder, Params};
+    ///
+    /// let mut decoder = Decoder::new(Params::new(PathBuf::from("path/to/compressed_stream"), None));
+    /// decoder.start();
+    /// for frame in decoder.into_iter() {
+    ///    // do something with the frame
+    /// }
+    /// ```
     pub fn start(&mut self) {
         let bitstream = Bitstream::from_file(&self.params.compressed_stream_path);
         // let mut bitstream_stat = bitstream::Stat::new();
@@ -120,8 +132,18 @@ impl Decoder {
         });
     }
 
-    /// returns the next decoded frame, if any. If it returns None, the decoder has finished decoding all the frames.
+    /// Blocks the current thread until the next decoded frame is received.
+    ///
+    /// Once this method returns None, it will not block anymore as there are no more frames left to be decoded.
     pub fn recv_frame(&self) -> Option<PointSet3> {
         self.rx.recv().ok()
+    }
+}
+
+impl Iterator for Decoder {
+    type Item = PointSet3;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.recv_frame()
     }
 }

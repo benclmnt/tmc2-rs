@@ -1,7 +1,9 @@
 [package]
 name = "tmc2rs"
 version = "0.1.0"
+authors = ["Bennett Clement <ben@benclmnt.com>"]
 edition = "2021"
+default-run = "decoder"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,7 +15,6 @@ path = "src/lib.rs"
 clap = { version = "4.0.23", features = ["derive"] }
 log = "0.4.17"
 env_logger = { version = "0.10.0", default-features=false }
-rayon = "1.6.0"
 ffmpeg-next = { version = "4.4.0", default-features=false, features=["codec", "format"] }
 tempfile = "3.3.0"
 cgmath = "0.18.0"
