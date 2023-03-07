@@ -124,7 +124,12 @@ impl Decoder {
 
                 // context.atlas_contexts[i].allocate_video_frames(&mut context);
                 // context.atlas_index = atl_id as u8;
-                decoder.decode(&mut context, tx.clone());
+
+                if let Err(_) = decoder.decode(&mut context, tx.clone()) {
+                    // receiver `rx` dropped, so we can stop decoding.
+                    break;
+                }
+
                 // SKIP: a bunch of if clauses on metrics.
             }
 

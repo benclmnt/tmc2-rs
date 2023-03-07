@@ -13,10 +13,9 @@ use crate::bitstream::{
 use crate::common::{VideoAttribute, VideoGeometry, VideoOccupancyMap};
 use crate::decoder::Patch;
 
-pub type Context = RawContext;
-
 #[derive(Default)]
-pub struct RawContext {
+/// Intermediate representation of a parsed binstream.
+pub struct Context {
     // PCCContext.h
     // pub model_origin: Vector3<f64>,
     // pub model_scale: f64,
@@ -42,7 +41,7 @@ pub struct RawContext {
     pub(crate) atlas_hls: AtlasHighLevelSyntax,
 }
 
-impl RawContext {
+impl Context {
     pub(crate) fn get_v3c_unit_header(&self, v3c_unit_type: &V3CUnitType) -> Option<V3CUnitHeader> {
         self.v3c_unit_headers.get(v3c_unit_type).cloned()
     }

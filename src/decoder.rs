@@ -30,8 +30,8 @@ impl Decoder {
     }
 
     /// Decode the parsed compressed stream (as represented in `Context`) and send the results frame-by-frame through the `tx` channel.
-    /// If any errors occur while sending (e.g. due to receiver being dropped), it will panic.
-    pub fn decode(&self, context: &mut Context, tx: Sender<PointSet3>) {
+    /// If any errors occur while sending (i.e. due to receiver being dropped), it will return an error and stop decoding.
+    pub fn decode(&self, context: &mut Context, tx: Sender<PointSet3>) -> Result<(), String> {
         // TODO(12Dec22): it seems that this function can be parallelized
         // if ( params_.nbThread_ > 0 ) { tbb::task_scheduler_init init( static_cast<int>( params_.nbThread_ ) ); }
 
@@ -308,8 +308,12 @@ impl Decoder {
             // SKIP: some checksum stuff
 
             // gof.frames.push(reconstruct);
-            tx.send(reconstruct).unwrap();
+            if let Err(e) = tx.send(reconstruct) {
+                return Err(e.to_string());
+            }
         }
+
+        Ok(())
     }
 
     /// Create the context for all patches in all frames in atlas_context
