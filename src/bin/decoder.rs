@@ -17,7 +17,8 @@ struct Args {
     /// Output path for decoded pointcloud.
     ///
     /// Specify either folder path or
-    /// customized path for multi-frame sequences, with sequence number represented as %04d, e.g. `output/sequence_%04d.ply`
+    /// customized path for multi-frame sequences, with sequence number represented as %04d, e.g. `output/sequence_%04d.ply`.
+    /// The first frame number is specified by `--start-frame` option.
     #[clap(short = 'o', long)]
     reconstructed_data_path: PathBuf,
 

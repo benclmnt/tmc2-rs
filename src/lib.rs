@@ -88,7 +88,7 @@ impl Decoder {
     /// use std::path::PathBuf;
     /// use tmc2rs::{Decoder, Params};
     ///
-    /// let mut decoder = Decoder::new(Params::new(PathBuf::from("path/to/compressed_stream"), None));
+    /// let mut decoder = Decoder::new(Params::new(PathBuf::from("path/to/compressed_stream")));
     /// decoder.start();
     /// for frame in decoder.into_iter() {
     ///    // do something with the frame
