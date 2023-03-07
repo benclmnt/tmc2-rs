@@ -660,7 +660,7 @@ impl SampleStreamV3CUnit {
         let v3c_unit_type8 = v3c_unit.bitstream.data[0] >> 3;
         let v3c_unit_type: V3CUnitType = v3c_unit_type8.into();
         v3c_unit.unit_type = v3c_unit_type;
-        info!(
+        debug!(
             "[v3c_unit] size: {}, type: {:?}",
             v3c_unit.size, v3c_unit.unit_type
         );
