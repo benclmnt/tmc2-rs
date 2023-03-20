@@ -275,8 +275,6 @@ pub(crate) fn generate_point_cloud(
         reconstruct.add_colors();
     }
 
-    // most likely an overallocation but probably doesn't matter
-    reconstruct.reserve(2 * tile.width as usize * tile.height as usize * tile.patches.len());
     let mut partition = vec![];
 
     trace!(
