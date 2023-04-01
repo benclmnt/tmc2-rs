@@ -111,6 +111,10 @@ impl Decoder {
             .expect("library decoder can only be started once");
 
         thread::spawn(move || {
+            // rayon::ThreadPoolBuilder::new()
+            //     .num_threads(6)
+            //     .build_global()
+            //     .unwrap();
             // IDEA (9Dec22): We can parallelize iterations of this loop, since the data is self-contained.
             // i.e. AD, OVD, GVD, AVD are independent only of the VPS that immediately precedes it.
             // In the reference implementation, after running `ssvu.decode(...)`, the decoder is run, which kinda implies that there is some potential for parallelism here.

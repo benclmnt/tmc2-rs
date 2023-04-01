@@ -9,6 +9,7 @@ use crate::{
 };
 use cgmath::Vector3;
 use log::trace;
+use rayon::prelude::*;
 
 pub type Point3D = Vector3<u16>;
 pub type Color3B = Vector3<u8>;
@@ -17,7 +18,7 @@ type Color16bit = Vector3<u16>;
 // type Normal3D = Vector3<usize>;
 // type Matrix3D = Matrix3<usize>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PointSet3 {
     // NOTE: IF YOU UPDATE THIS STRUCT, dont forget to update resize and append point set.
     pub positions: Vec<Point3D>,
@@ -270,12 +271,10 @@ pub(crate) fn generate_point_cloud(
     let block_to_patch_height = tile.height as usize / params.occupancy_resolution;
     let map_count = params.map_count_minus1 as usize + 1;
 
-    let mut reconstruct = PointSet3::default();
+    let mut orig_reconstruct = PointSet3::default();
     if attribute_count > 0 {
-        reconstruct.add_colors();
+        orig_reconstruct.add_colors();
     }
-
-    let mut partition = vec![];
 
     trace!(
         "generate point cloud pbfEnableFlag = {} ",
@@ -346,10 +345,15 @@ pub(crate) fn generate_point_cloud(
     );
     // if decoder && patchPrecedenceOrderFlag, reverse the patch iterator
 
-    // DIFF: we don't set this back to tile.point_to_pixel
-    let mut point_to_pixel = vec![];
+    // DIFF: we don't set point_to_pixel back to tile.point_to_pixel
 
-    for (patch_index, patch) in tile.patches.iter().enumerate() {
+    // copy some variables before parallelizing
+    // let multiple_map_streams_present_flag = context.get_vps().unwrap().multiple_map_streams_present_flag;
+    // let attr_frames = atlas.attr_frames.clone();
+
+    let (mut reconstruct, partition, point_to_pixel) = tile.patches.par_iter().enumerate().fold(
+        || (orig_reconstruct.clone(), vec![], vec![]), 
+    |(mut reconstruct, mut partition, mut point_to_pixel), (patch_index, patch)| {
         trace!(
             "P{}/{}: 2D={:?}*{:?} 3D({},{},{})*({},{}) A={:?} Or={:?} P={} => {} AxisOfAdditionalPlane={}",
             patch_index,
@@ -477,7 +481,28 @@ pub(crate) fn generate_point_cloud(
                 }
             }
         }
-    }
+
+        (reconstruct, partition, point_to_pixel)
+    }).reduce(
+        || (orig_reconstruct.clone(), vec![], vec![]),
+        |mut a, (mut reconstruct, mut partition, mut point_to_pixel)| {
+            // for i in 0..attribute_count as usize {
+            //     reconstruct = color_point_cloud(
+            //         reconstruct,
+            //         tile,
+            //         params,
+            //         &attr_frames[i],
+            //         &point_to_pixel,
+            //         multiple_map_streams_present_flag,
+            //     );
+            // }
+
+            a.0.append_point_set(reconstruct);
+            a.1.append(&mut partition);
+            a.2.append(&mut point_to_pixel);
+            a
+        },
+    );
 
     tile.total_number_of_regular_points = reconstruct.point_count();
 
