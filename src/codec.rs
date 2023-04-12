@@ -658,8 +658,6 @@ fn color_point_cloud(
 }
 
 /// Convert YUV10bit to RGB8bit
-///
-/// Modified from https://softpixel.com/~cwright/programming/colorspace/yuv/
 fn convert_yuv10_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
     // yuv16 to rgb8
     let clamp = |x: f64| -> u8 {
@@ -679,9 +677,9 @@ fn convert_yuv10_to_rgb8(color16: &Vector3<u16>) -> Vector3<u8> {
     let y = y as f64;
     let u = u as f64;
     let v = v as f64;
-    let r = y + 1.4075 * (v - offset);
-    let g = y - 0.3455 * (u - offset) - (0.7169 * (v - offset));
-    let b = y + 1.7790 * (u - offset);
+    let r = y + 1.57480 * (v - offset);
+    let g = y - 0.18733 * (u - offset) - (0.46813 * (v - offset));
+    let b = y + 1.85563 * (u - offset);
     let r = clamp((r / scale * 255.).floor());
     let g = clamp((g / scale * 255.).floor());
     let b = clamp((b / scale * 255.).floor());
